@@ -1,4 +1,4 @@
-"""Compare training time and accuracy of svm_smo with LIBSVM (scikit-learn SVC/SVR).
+"""Compare training time and accuracy of smo_solver with LIBSVM (scikit-learn SVC/SVR).
 
 Usage: python benchmarks/bench_vs_libsvm.py [--sizes 1000 2000 5000]
 """
@@ -11,7 +11,7 @@ import time
 import numpy as np
 from sklearn.svm import SVC, SVR
 
-import svm_smo
+import smo_solver
 
 
 def data(n: int, d: int = 10, seed: int = 0):
@@ -35,20 +35,20 @@ def main() -> None:
     parser.add_argument("--lam", type=float, default=0.01)
     args = parser.parse_args()
     gamma, lam = 0.1, args.lam
-    print(f"{'task':<14}{'n':>7}{'svm_smo [s]':>13}{'libsvm [s]':>12}{'steps':>9}{'max |Δf|':>11}")
+    print(f"{'task':<14}{'n':>7}{'smo_solver [s]':>13}{'libsvm [s]':>12}{'steps':>9}{'max |Δf|':>11}")
     for n in args.sizes:
         x, y, t = data(n)
         xs = x[:200]
         cases = [
             (
                 "classification",
-                lambda x=x, y=y: svm_smo.solve_classification(x, y, lam, gamma=gamma),
+                lambda x=x, y=y: smo_solver.solve_classification(x, y, lam, gamma=gamma),
                 lambda x=x, y=y: SVC(C=1 / lam, gamma=gamma, cache_size=256).fit(x, y),
                 "decision_function",
             ),
             (
                 "regression",
-                lambda x=x, t=t: svm_smo.solve_regression(x, t, lam, epsilon=0.1, gamma=gamma),
+                lambda x=x, t=t: smo_solver.solve_regression(x, t, lam, epsilon=0.1, gamma=gamma),
                 lambda x=x, t=t: SVR(C=1 / lam, epsilon=0.1, gamma=gamma, cache_size=256).fit(x, t),
                 "predict",
             ),
@@ -56,7 +56,7 @@ def main() -> None:
         for task, ours_fn, ref_fn, method in cases:
             res, t_ours = timed(ours_fn)
             ref, t_ref = timed(ref_fn)
-            ours = svm_smo.kernel_matrix(xs, x, gamma=gamma) @ (res.beta / lam) + res.b
+            ours = smo_solver.kernel_matrix(xs, x, gamma=gamma) @ (res.beta / lam) + res.b
             diff = np.abs(ours - getattr(ref, method)(xs)).max()
             print(f"{task:<14}{n:>7}{t_ours:>13.3f}{t_ref:>12.3f}{res.steps:>9}{diff:>11.1e}")
 

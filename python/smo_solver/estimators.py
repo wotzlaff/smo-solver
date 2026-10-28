@@ -110,7 +110,7 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
     class_weight : dict or "balanced", optional
         Weights per class, multiplied with ``sample_weight``.
     tol, max_steps, time_limit, working_set, cache_size_mb
-        Solver options, see :func:`svm_smo.solve_classification`.
+        Solver options, see :func:`smo_solver.solve_classification`.
     """
 
     def __init__(

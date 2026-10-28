@@ -3,8 +3,8 @@
 #![allow(clippy::needless_range_loop)] // index loops mirror the matrix notation
 
 use proptest::prelude::*;
-use svm_smo::measures::{dual_gradient, violation};
-use svm_smo::*;
+use smo_solver::measures::{dual_gradient, violation};
+use smo_solver::*;
 
 /// Deterministic pseudo-random numbers in [0, 1).
 struct Lcg(u64);

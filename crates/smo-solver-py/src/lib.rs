@@ -1,16 +1,16 @@
-//! Python bindings of `svm-smo` (module `svm_smo._core`).
+//! Python bindings of `smo-solver` (module `smo_solver._core`).
 
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use svm_smo::{
+use smo_solver::{
     solve_with, DualProblem, FeatureKernel, Kernel, KernelFunction, PrecomputedKernel, SmoOptions,
     Status, WorkingSetSelection,
 };
 
 /// Result of an SMO run.
-#[pyclass(get_all, frozen, module = "svm_smo._core")]
+#[pyclass(get_all, frozen, module = "smo_solver._core")]
 struct SmoResult {
     /// Dual variables (length ``2 n`` for regression).
     alpha: Py<PyArray1<f64>>,
@@ -128,7 +128,7 @@ fn solve_problem(
     let mut error: Option<PyErr> = None;
 
     let outcome = py.detach(|| {
-        let on_progress = |progress: &svm_smo::Progress| -> bool {
+        let on_progress = |progress: &smo_solver::Progress| -> bool {
             Python::attach(|py| {
                 if let Err(e) = py.check_signals() {
                     error = Some(e);
@@ -160,7 +160,7 @@ fn solve_problem(
             KernelSpec::Function(f) => solve(&FeatureKernel::new(data, dim.max(1), f)),
             KernelSpec::Precomputed => {
                 if n != dim {
-                    return Err(svm_smo::ProblemError::LengthMismatch {
+                    return Err(smo_solver::ProblemError::LengthMismatch {
                         what: "precomputed kernel columns",
                         expected: n,
                         got: dim,

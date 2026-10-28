@@ -8,8 +8,8 @@ rely on the dual derivation used by the solver.
 import numpy as np
 import pytest
 
-import svm_smo
-from svm_smo import kernel_matrix
+import smo_solver
+from smo_solver import kernel_matrix
 
 cp = pytest.importorskip("cvxpy")
 
@@ -65,7 +65,7 @@ def test_classification(delta, max_asum, lam):
         return w @ m
 
     ref = solve_primal(k, losses, lam, max_asum)
-    res = svm_smo.solve_classification(
+    res = smo_solver.solve_classification(
         x, y, lam, gamma=0.8, weights=w, smoothing=delta, max_asum=max_asum, tol=1e-9
     )
     assert res.converged
@@ -89,7 +89,7 @@ def test_regression(delta, max_asum):
         return w @ (m1 + m2)
 
     ref = solve_primal(k, losses, lam, max_asum)
-    res = svm_smo.solve_regression(
+    res = smo_solver.solve_regression(
         x,
         t,
         lam,
@@ -110,7 +110,7 @@ def test_least_squares():
     lam = 0.3
     k = kernel_matrix(x, x, "poly", gamma=0.5, coef0=1.0, degree=2)
     ref = solve_primal(k, lambda f, c: 0.5 * w @ cp.square(f - t), lam)
-    res = svm_smo.solve_least_squares(
+    res = smo_solver.solve_least_squares(
         x, t, lam, kernel="poly", gamma=0.5, coef0=1.0, degree=2, weights=w, tol=1e-10
     )
     np.testing.assert_allclose(res.primal_objective, ref, rtol=1e-6)

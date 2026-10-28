@@ -1,5 +1,5 @@
 [package]
-name = "svm-smo-py"
+name = "smo-solver-py"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,6 @@ name = "_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-svm-smo = { path = "../svm-smo" }
+smo-solver = { path = "../smo-solver" }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"] }
 numpy = "0.30"

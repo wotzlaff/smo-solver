@@ -5,8 +5,8 @@ import pytest
 from scipy.optimize import minimize
 from sklearn.svm import SVC, SVR
 
-import svm_smo
-from svm_smo import kernel_matrix, smooth_max
+import smo_solver
+from smo_solver import kernel_matrix, smooth_max
 
 
 def make_data(n=120, d=3, seed=0):
@@ -25,7 +25,7 @@ def decision(x_train, res, x, gamma):
 def test_classification_matches_libsvm(lam):
     x, y, _ = make_data()
     gamma = 0.5
-    res = svm_smo.solve_classification(x, y, lam, gamma=gamma, tol=1e-8)
+    res = smo_solver.solve_classification(x, y, lam, gamma=gamma, tol=1e-8)
     assert res.converged
     ref = SVC(C=1 / lam, gamma=gamma, tol=1e-8).fit(x, y)
     xt = make_data(50, seed=1)[0]
@@ -40,7 +40,7 @@ def test_classification_matches_libsvm(lam):
 def test_regression_matches_libsvm(eps):
     x, _, t = make_data()
     gamma, lam = 0.3, 0.05
-    res = svm_smo.solve_regression(x, t, lam, epsilon=eps, gamma=gamma, tol=1e-8)
+    res = smo_solver.solve_regression(x, t, lam, epsilon=eps, gamma=gamma, tol=1e-8)
     assert res.converged and res.alpha.shape == (2 * len(t),)
     ref = SVR(C=1 / lam, epsilon=eps, gamma=gamma, tol=1e-8).fit(x, t)
     xt = make_data(50, seed=2)[0]
@@ -51,7 +51,7 @@ def test_least_squares_closed_form():
     x, _, t = make_data(80)
     lam, gamma = 0.1, 0.7
     w = np.linspace(0.5, 2.0, len(t))
-    res = svm_smo.solve_least_squares(x, t, lam, gamma=gamma, weights=w, tol=1e-10)
+    res = smo_solver.solve_least_squares(x, t, lam, gamma=gamma, weights=w, tol=1e-10)
     k = kernel_matrix(x, x, gamma=gamma)
     n = len(t)
     a = np.block([[k / lam + np.diag(1 / w), np.ones((n, 1))], [np.ones((1, n)), np.zeros((1, 1))]])
@@ -64,7 +64,7 @@ def test_smoothed_weighted_constrained_problem_matches_scipy():
     x, y, _ = make_data(30, 2, seed=3)
     lam, gamma, delta, shift, max_asum = 0.2, 1.0, 0.3, 1.0, 6.0
     w = np.linspace(0.5, 1.5, len(y))
-    res = svm_smo.solve_classification(
+    res = smo_solver.solve_classification(
         x,
         y,
         lam,
@@ -113,9 +113,9 @@ def test_smoothed_weighted_constrained_problem_matches_scipy():
 def test_solve_dual_reproduces_classification():
     x, y, _ = make_data(60)
     lam = 0.1
-    ref = svm_smo.solve_classification(x, y, lam, tol=1e-9)
+    ref = smo_solver.solve_classification(x, y, lam, tol=1e-9)
     lo, hi = np.minimum(0, y), np.maximum(0, y)
-    res = svm_smo.solve_dual(x, lam, np.zeros_like(y), -y, lo, hi, tol=1e-9)
+    res = smo_solver.solve_dual(x, lam, np.zeros_like(y), -y, lo, hi, tol=1e-9)
     np.testing.assert_allclose(res.alpha, ref.alpha, atol=1e-8)
 
 
@@ -123,10 +123,10 @@ def test_precomputed_kernel_and_other_kernels():
     x, y, _ = make_data(60)
     k = kernel_matrix(x, x, "poly", gamma=0.5, coef0=1.0, degree=2)
     poly = dict(kernel="poly", gamma=0.5, coef0=1.0, degree=2)
-    a = svm_smo.solve_classification(x, y, 0.1, **poly, tol=1e-9)
-    b = svm_smo.solve_classification(k, y, 0.1, kernel="precomputed", tol=1e-9)
+    a = smo_solver.solve_classification(x, y, 0.1, **poly, tol=1e-9)
+    b = smo_solver.solve_classification(k, y, 0.1, kernel="precomputed", tol=1e-9)
     np.testing.assert_allclose(a.alpha, b.alpha, atol=1e-8)
-    lin = svm_smo.solve_classification(x, y, 0.1, kernel="linear")
+    lin = smo_solver.solve_classification(x, y, 0.1, kernel="linear")
     assert lin.converged
 
 
@@ -134,7 +134,7 @@ def test_precomputed_kernel_and_other_kernels():
 def test_working_sets_and_shrinking(ws):
     x, y, _ = make_data(150)
     objs = [
-        svm_smo.solve_classification(
+        smo_solver.solve_classification(
             x, y, 0.01, working_set=ws, shrinking=s, shrinking_period=10, tol=1e-9
         ).dual_objective
         for s in (False, True)
@@ -150,12 +150,12 @@ def test_callback_and_warm_start():
         seen.append(info["step"])
         return info["step"] >= 20
 
-    res = svm_smo.solve_classification(x, y, 0.001, callback=cb, callback_period=10, tol=1e-9)
+    res = smo_solver.solve_classification(x, y, 0.001, callback=cb, callback_period=10, tol=1e-9)
     assert res.status == "interrupted" and seen == [10, 20] and res.steps == 20
-    partial = svm_smo.solve_classification(x, y, 0.001, max_steps=600, tol=1e-6)
+    partial = smo_solver.solve_classification(x, y, 0.001, max_steps=600, tol=1e-6)
     assert partial.status == "max_steps"
-    warm = svm_smo.solve_classification(x, y, 0.001, alpha0=partial.alpha, tol=1e-6)
-    cold = svm_smo.solve_classification(x, y, 0.001, tol=1e-6)
+    warm = smo_solver.solve_classification(x, y, 0.001, alpha0=partial.alpha, tol=1e-6)
+    cold = smo_solver.solve_classification(x, y, 0.001, tol=1e-6)
     assert warm.steps < cold.steps - 400
     np.testing.assert_allclose(warm.dual_objective, cold.dual_objective, rtol=1e-6)
 
@@ -167,20 +167,20 @@ def test_callback_exception_propagates():
         raise RuntimeError("stop!")
 
     with pytest.raises(RuntimeError, match="stop!"):
-        svm_smo.solve_classification(x, y, 0.001, callback=cb, callback_period=1)
+        smo_solver.solve_classification(x, y, 0.001, callback=cb, callback_period=1)
 
 
 def test_input_validation():
     x, y, _ = make_data(20)
     with pytest.raises(ValueError, match="rows"):
-        svm_smo.solve_classification(x, y[:-1], 1.0)
+        smo_solver.solve_classification(x, y[:-1], 1.0)
     with pytest.raises(ValueError, match="y"):
-        svm_smo.solve_classification(x, y * 2, 1.0)
+        smo_solver.solve_classification(x, y * 2, 1.0)
     with pytest.raises(ValueError, match="lambda"):
-        svm_smo.solve_classification(x, y, -1.0)
+        smo_solver.solve_classification(x, y, -1.0)
     with pytest.raises(ValueError, match="kernel"):
-        svm_smo.solve_classification(x, y, 1.0, kernel="sigmoid")
+        smo_solver.solve_classification(x, y, 1.0, kernel="sigmoid")
     with pytest.raises(ValueError, match="working set"):
-        svm_smo.solve_classification(x, y, 1.0, working_set="foo")
+        smo_solver.solve_classification(x, y, 1.0, working_set="foo")
     with pytest.raises(ValueError, match="contiguous"):
-        svm_smo.solve_classification(np.asfortranarray(x), y, 1.0)
+        smo_solver.solve_classification(np.asfortranarray(x), y, 1.0)

@@ -1,8 +1,8 @@
-# svm-smo
+# smo-solver
 
 **Fast Sequential Minimal Optimization (SMO) for smoothed, weighted and ν-constrained support vector machines — written in Rust, usable from Python.**
 
-`svm-smo` solves the dual training problem of kernel support vector machines for a whole
+`smo-solver` solves the dual training problem of kernel support vector machines for a whole
 family of loss functions: the classical hinge and ε-insensitive losses, their *quadratically
 smoothed* versions, the squared loss (LS-SVM), arbitrary sample weights and an optional bound on
 the 1-norm of the dual variables (a generalised ν-SVM). It implements the methods analysed in
@@ -29,14 +29,14 @@ which tunes SVM hyperparameters with exact gradients.
 ## Installation
 
 ```bash
-pip install svm-smo              # solver only (NumPy)
-pip install "svm-smo[sklearn]"   # + scikit-learn estimators
+pip install smo-solver              # solver only (NumPy)
+pip install "smo-solver[sklearn]"   # + scikit-learn estimators
 ```
 
 Building from source requires a Rust toolchain (≥ 1.75):
 
 ```bash
-git clone https://github.com/wotzlaff/svm-smo && cd svm-smo
+git clone https://github.com/wotzlaff/smo-solver && cd smo-solver
 uv venv && uv pip install maturin && uv run maturin develop --release
 ```
 
@@ -44,7 +44,7 @@ uv venv && uv pip install maturin && uv run maturin develop --release
 
 ```python
 import numpy as np
-from svm_smo import SmoSVC, solve_classification
+from smo_solver import SmoSVC, solve_classification
 
 rng = np.random.default_rng(0)
 x = rng.normal(size=(500, 2))
@@ -64,7 +64,7 @@ res.beta / res.lam    # kernel expansion coefficients per sample
 ## Quick start (Rust)
 
 ```rust
-use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions};
+use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions};
 
 let x = [0.0, 0.0, 0.2, 0.1, 1.0, 1.0, 0.9, 1.2]; // 4 samples, row-major
 let y = [-1.0, -1.0, 1.0, 1.0];
@@ -105,7 +105,7 @@ Training time against LIBSVM (`sklearn.svm.SVC`/`SVR`, same `C = 1/λ`, `γ = 0.
 `1e-3`) on synthetic data with 10 features (`benchmarks/bench_vs_libsvm.py`, single machine,
 indicative only):
 
-| task | n | svm-smo | LIBSVM | SMO steps (svm-smo / LIBSVM) |
+| task | n | smo-solver | LIBSVM | SMO steps (smo-solver / LIBSVM) |
 |---|---:|---:|---:|---:|
 | classification | 2000 | 0.12–0.18 s | 0.12 s | 13 996 / 14 125 |
 | classification | 5000 | 1.2–1.4 s | 0.71 s | 51 759 / 51 754 |

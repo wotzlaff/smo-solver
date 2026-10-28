@@ -1,6 +1,6 @@
 //! Profiling driver: `cargo run --release --example profile -- [reg|cls] [n]`.
 
-use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions};
+use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

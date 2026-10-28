@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "svm-smo"
+name = "smo-solver"
 description = "Fast SMO solver (Rust) for smoothed and weighted support vector machines"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -27,15 +27,15 @@ sklearn = ["scikit-learn>=1.2"]
 
 [project.urls]
 Homepage = "https://wotzlaff.github.io/svm-site/"
-Repository = "https://github.com/wotzlaff/svm-smo"
+Repository = "https://github.com/wotzlaff/smo-solver"
 
 [dependency-groups]
 dev = ["pytest>=8", "scipy>=1.10", "cvxpy>=1.5", "scikit-learn>=1.2", "maturin>=1.7,<2", "ruff>=0.6"]
 
 [tool.maturin]
-manifest-path = "crates/svm-smo-py/Cargo.toml"
+manifest-path = "crates/smo-solver-py/Cargo.toml"
 python-source = "python"
-module-name = "svm_smo._core"
+module-name = "smo_solver._core"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
@@ -49,4 +49,4 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B", "NPY"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["svm_smo"]
+known-first-party = ["smo_solver"]

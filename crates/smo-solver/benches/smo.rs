@@ -1,7 +1,7 @@
-//! Benchmarks of the SMO solver on synthetic data (`cargo bench -p svm-smo`).
+//! Benchmarks of the SMO solver on synthetic data (`cargo bench -p smo-solver`).
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions};
+use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions};
 
 fn dataset(n: usize, dim: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut state = 42u64;

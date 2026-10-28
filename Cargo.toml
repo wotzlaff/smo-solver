@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/svm-smo", "crates/svm-smo-py", "crates/svm-smo-wasm"]
+members = ["crates/smo-solver", "crates/smo-solver-py", "crates/smo-solver-wasm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,13 +8,13 @@ edition = "2021"
 rust-version = "1.75"
 authors = ["Nico Strasdat <nstrasdat@gmail.com>"]
 license = "BSD-3-Clause"
-repository = "https://github.com/wotzlaff/svm-smo"
+repository = "https://github.com/wotzlaff/smo-solver"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 
-# small binary for the browser demo: cargo build --profile wasm -p svm-smo-wasm --target wasm32-unknown-unknown
+# small binary for the browser demo: cargo build --profile wasm -p smo-solver-wasm --target wasm32-unknown-unknown
 [profile.wasm]
 inherits = "release"
 opt-level = "s"

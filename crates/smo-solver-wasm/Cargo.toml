@@ -1,6 +1,6 @@
 [package]
-name = "svm-smo-wasm"
-description = "WebAssembly build of svm-smo for the interactive demo (plain C ABI, no JS glue)"
+name = "smo-solver-wasm"
+description = "WebAssembly build of smo-solver for the interactive demo (plain C ABI, no JS glue)"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -12,4 +12,4 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-svm-smo = { path = "../svm-smo", default-features = false }
+smo-solver = { path = "../smo-solver", default-features = false }

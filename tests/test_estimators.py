@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from svm_smo import SmoLSSVR, SmoSVC, SmoSVR
+from smo_solver import SmoLSSVR, SmoSVC, SmoSVR
 
 # `gamma="scale"` depends on the data variance, which changes when samples are repeated
 _WEIGHT_EQUIVALENCE = {
@@ -77,7 +77,7 @@ def test_lssvr_matches_kernel_ridge_without_bias():
 
 def test_precomputed_estimator():
     x, y = make_classification(80, 5, random_state=2)
-    from svm_smo import kernel_matrix
+    from smo_solver import kernel_matrix
 
     k = kernel_matrix(x, x, gamma=0.5)
     a = SmoSVC(kernel="precomputed").fit(k, y)

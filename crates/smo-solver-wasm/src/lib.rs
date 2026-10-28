@@ -1,4 +1,4 @@
-//! WebAssembly interface of `svm-smo` for the browser demo.
+//! WebAssembly interface of `smo-solver` for the browser demo.
 //!
 //! The interface is a plain C ABI: JavaScript allocates `f64` buffers with [`alloc`], writes the
 //! data into `memory`, calls [`train`] and evaluates the resulting model with [`decision`].
@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, SmoResult};
+use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, SmoResult};
 
 struct Trained {
     model: Model,

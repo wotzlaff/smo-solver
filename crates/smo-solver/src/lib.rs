@@ -1,4 +1,4 @@
-//! # svm-smo
+//! # smo-solver
 //!
 //! Sequential Minimal Optimization (SMO) for a general class of support vector machine
 //! dual problems, including smoothed loss functions, sample weights and an optional
@@ -9,7 +9,7 @@
 //! > 2023, <https://nbn-resolving.org/urn:nbn:de:bsz:14-qucosa2-874731>.
 //!
 //! ```
-//! use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, Status};
+//! use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, Status};
 //!
 //! // four points in the plane, two per class
 //! let x = [0.0, 0.0, 0.2, 0.1, 1.0, 1.0, 0.9, 1.2];

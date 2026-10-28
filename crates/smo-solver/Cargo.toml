@@ -1,5 +1,5 @@
 [package]
-name = "svm-smo"
+name = "smo-solver"
 description = "Sequential Minimal Optimization for a general class of (smoothed) support vector machine dual problems"
 readme = "../../README.md"
 keywords = ["svm", "smo", "machine-learning", "optimization", "kernel"]

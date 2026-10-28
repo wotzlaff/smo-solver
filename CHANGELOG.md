@@ -5,15 +5,15 @@
 Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legacy-nim`).
 
 ### Added
-- Rust crate `svm-smo`: SMO for a general separable quadratic dual (hinge, ε-insensitive,
+- Rust crate `smo-solver`: SMO for a general separable quadratic dual (hinge, ε-insensitive,
   quadratically smoothed variants, least squares) with sample weights and an optional 1-norm
   constraint; working set rules MVP / maximal unbounded decrease / maximal decrease
   (one- or two-sided); shrinking; LRU kernel row cache; warm start; callbacks; time limit;
   duality gap and bound-aware violation measure.
 - Kernels: RBF, linear, polynomial, precomputed. Optional rayon parallelism; the core crate
   builds for `wasm32-unknown-unknown`.
-- `svm-smo-wasm`: 66 KB WebAssembly module with a plain C ABI (no JS glue) for browser demos.
-- Python package `svm_smo` (PyO3, abi3 wheels for Python ≥ 3.10): zero-copy NumPy input,
+- `smo-solver-wasm`: 66 KB WebAssembly module with a plain C ABI (no JS glue) for browser demos.
+- Python package `smo_solver` (PyO3, abi3 wheels for Python ≥ 3.10): zero-copy NumPy input,
   GIL released during training, `Ctrl-C` support, type stubs, scikit-learn estimators
   `SmoSVC` (incl. one-vs-rest), `SmoSVR`, `SmoLSSVR`.
 - Tests against duality gap, closed-form LS-SVM, LIBSVM, SciPy and cvxpy; property tests;
