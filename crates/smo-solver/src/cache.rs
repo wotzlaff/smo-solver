@@ -8,6 +8,8 @@ struct Slot {
     key: usize,
     prev: usize,
     next: usize,
+    /// number of restrictions applied to `row` (it is brought up to date when it is used)
+    epoch: usize,
     row: Vec<f64>,
 }
 
@@ -16,7 +18,8 @@ struct Slot {
 /// Rows are keyed by *kernel* index and contain the entries `K[key, cols[p]]` for the
 /// current list of active columns `cols` (one column per active solver variable, so a
 /// kernel index may occur several times, e.g. for ε-SVR). When the active set shrinks,
-/// the cached rows are compacted instead of being recomputed.
+/// the cached rows are compacted instead of being recomputed; this happens lazily when a row
+/// is used again, since most cached rows are not touched between two restrictions.
 pub(crate) struct RowCache {
     slots: Vec<Slot>,
     /// `lookup[key]` = slot holding the row of `key`, or `NIL`
@@ -25,6 +28,8 @@ pub(crate) struct RowCache {
     tail: usize,
     capacity: usize,
     cols: Vec<usize>,
+    /// `history[e]`: the columns (of the layout after `e` restrictions) kept by restriction `e`
+    history: Vec<Vec<u32>>,
     pub(crate) hits: u64,
     pub(crate) misses: u64,
 }
@@ -40,6 +45,7 @@ impl RowCache {
             tail: NIL,
             capacity: capacity.max(2),
             cols,
+            history: Vec::new(),
             hits: 0,
             misses: 0,
         }
@@ -86,6 +92,7 @@ impl RowCache {
         let s = self.lookup[key];
         if s != NIL {
             self.hits += 1;
+            self.refresh(s);
             if self.head != s {
                 self.unlink(s);
                 self.push_front(s);
@@ -98,6 +105,7 @@ impl RowCache {
                 key,
                 prev: NIL,
                 next: NIL,
+                epoch: self.history.len(),
                 row: vec![0.0; self.cols.len()],
             });
             self.slots.len() - 1
@@ -106,6 +114,7 @@ impl RowCache {
             self.unlink(s);
             self.lookup[self.slots[s].key] = NIL;
             self.slots[s].key = key;
+            self.slots[s].epoch = self.history.len();
             self.slots[s].row.resize(self.cols.len(), 0.0);
             s
         };
@@ -113,6 +122,18 @@ impl RowCache {
         self.lookup[key] = s;
         self.push_front(s);
         s
+    }
+
+    /// Applies the restrictions that happened since the row in slot `s` was last used.
+    fn refresh(&mut self, s: usize) {
+        let slot = &mut self.slots[s];
+        for kept in &self.history[slot.epoch..] {
+            for (w, &p) in kept.iter().enumerate() {
+                slot.row[w] = slot.row[p as usize];
+            }
+            slot.row.truncate(kept.len());
+        }
+        slot.epoch = self.history.len();
     }
 
     /// Cached row stored in slot `s` (see [`RowCache::ensure`]).
@@ -124,17 +145,14 @@ impl RowCache {
     /// Keeps only the columns `p` with `keep[p] == true` in all cached rows.
     pub(crate) fn restrict(&mut self, keep: &[bool]) {
         debug_assert_eq!(keep.len(), self.cols.len());
-        let kept: Vec<usize> = (0..keep.len()).filter(|&p| keep[p]).collect();
+        let kept: Vec<u32> = (0..keep.len() as u32)
+            .filter(|&p| keep[p as usize])
+            .collect();
         for (w, &p) in kept.iter().enumerate() {
-            self.cols[w] = self.cols[p];
+            self.cols[w] = self.cols[p as usize];
         }
         self.cols.truncate(kept.len());
-        for slot in &mut self.slots {
-            for (w, &p) in kept.iter().enumerate() {
-                slot.row[w] = slot.row[p];
-            }
-            slot.row.truncate(kept.len());
-        }
+        self.history.push(kept);
     }
 
     /// Drops all cached rows and switches to new columns.
@@ -143,6 +161,7 @@ impl RowCache {
             self.lookup[slot.key] = NIL;
         }
         self.slots.clear();
+        self.history.clear();
         self.head = NIL;
         self.tail = NIL;
         self.cols = cols;
