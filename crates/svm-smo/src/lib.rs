@@ -5,7 +5,8 @@
 //! 1-norm constraint (generalised ν-SVM). The algorithms follow
 //!
 //! > N. Strasdat, *Duality, Derivative-Based Training Methods and Hyperparameter
-//! > Optimization for Support Vector Machines*, Dissertation, TU Dresden.
+//! > Optimization for Support Vector Machines*, Dissertation, Technische Universität Dresden,
+//! > 2023, <https://nbn-resolving.org/urn:nbn:de:bsz:14-qucosa2-874731>.
 //!
 //! ```
 //! use svm_smo::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, Status};

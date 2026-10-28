@@ -8,7 +8,8 @@ smoothed* versions, the squared loss (LS-SVM), arbitrary sample weights and an o
 the 1-norm of the dual variables (a generalised ν-SVM). It implements the methods analysed in
 
 > N. Strasdat, *Duality, Derivative-Based Training Methods and Hyperparameter Optimization for
-> Support Vector Machines*, Dissertation, TU Dresden.
+> Support Vector Machines*, Dissertation, Technische Universität Dresden, 2023.
+> [urn:nbn:de:bsz:14-qucosa2-874731](https://nbn-resolving.org/urn:nbn:de:bsz:14-qucosa2-874731)
 
 and is the training backend of [`optimized-svm`](https://github.com/wotzlaff/optimized-svm),
 which tunes SVM hyperparameters with exact gradients.
@@ -131,6 +132,23 @@ solutions, LIBSVM (via scikit-learn), SciPy's SLSQP and primal formulations solv
   needs very many steps.
 - Only quadratic conjugate losses are supported by SMO; smooth non-quadratic losses
   (e.g. logistic, Poisson) are handled by the Newton solver in `optimized-svm`.
+
+## Citation
+
+If you use this software, please cite the dissertation:
+
+```bibtex
+@phdthesis{strasdat2023,
+  author = {Nico Strasdat},
+  title  = {Duality, Derivative-Based Training Methods and
+            Hyperparameter Optimization for Support Vector Machines},
+  school = {Technische Universit{\"a}t Dresden},
+  type   = {Dissertation},
+  year   = {2023},
+  url    = {https://nbn-resolving.org/urn:nbn:de:bsz:14-qucosa2-874731},
+  note   = {urn:nbn:de:bsz:14-qucosa2-874731}
+}
+```
 
 ## License
 
