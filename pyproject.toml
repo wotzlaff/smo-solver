@@ -30,7 +30,7 @@ Homepage = "https://wotzlaff.github.io/svm-site/"
 Repository = "https://github.com/wotzlaff/svm-smo"
 
 [dependency-groups]
-dev = ["pytest>=8", "scipy>=1.10", "scikit-learn>=1.2", "maturin>=1.7,<2", "ruff>=0.6"]
+dev = ["pytest>=8", "scipy>=1.10", "cvxpy>=1.5", "scikit-learn>=1.2", "maturin>=1.7,<2", "ruff>=0.6"]
 
 [tool.maturin]
 manifest-path = "crates/svm-smo-py/Cargo.toml"
