@@ -19,7 +19,7 @@
 //! its shifted gradient `g_i + b + s_i c` exceeds `factor · r(α)^η` with the wrong sign for
 //! leaving the bound. Before termination the full problem is restored and checked again.
 
-use web_time::Instant;
+use crate::clock::Instant;
 
 use crate::cache::RowCache;
 use crate::kernel::Kernel;

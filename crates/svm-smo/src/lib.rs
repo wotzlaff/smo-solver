@@ -22,6 +22,7 @@
 //! ```
 
 mod cache;
+mod clock;
 pub mod kernel;
 pub mod measures;
 pub mod model;

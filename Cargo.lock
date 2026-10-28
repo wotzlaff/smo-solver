@@ -850,6 +850,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "svm-smo-wasm"
+version = "0.1.0"
+dependencies = [
+ "svm-smo",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

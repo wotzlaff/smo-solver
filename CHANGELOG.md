@@ -12,6 +12,7 @@ Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legac
   duality gap and bound-aware violation measure.
 - Kernels: RBF, linear, polynomial, precomputed. Optional rayon parallelism; the core crate
   builds for `wasm32-unknown-unknown`.
+- `svm-smo-wasm`: 66 KB WebAssembly module with a plain C ABI (no JS glue) for browser demos.
 - Python package `svm_smo` (PyO3, abi3 wheels for Python ≥ 3.10): zero-copy NumPy input,
   GIL released during training, `Ctrl-C` support, type stubs, scikit-learn estimators
   `SmoSVC` (incl. one-vs-rest), `SmoSVR`, `SmoLSSVR`.

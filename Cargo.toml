@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/svm-smo", "crates/svm-smo-py"]
+members = ["crates/svm-smo", "crates/svm-smo-py", "crates/svm-smo-wasm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +13,11 @@ repository = "https://github.com/wotzlaff/svm-smo"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# small binary for the browser demo: cargo build --profile wasm -p svm-smo-wasm --target wasm32-unknown-unknown
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
