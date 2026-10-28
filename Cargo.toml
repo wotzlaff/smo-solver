@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/svm-smo", "crates/svm-smo-py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Nico Strasdat <nstrasdat@gmail.com>"]
+license = "BSD-3-Clause"
+repository = "https://github.com/wotzlaff/svm-smo"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

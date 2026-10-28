@@ -1,0 +1,29 @@
+[package]
+name = "svm-smo"
+description = "Sequential Minimal Optimization for a general class of (smoothed) support vector machine dual problems"
+readme = "../../README.md"
+keywords = ["svm", "smo", "machine-learning", "optimization", "kernel"]
+categories = ["science", "mathematics", "algorithms"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["parallel"]
+## Compute kernel rows in parallel with rayon (disable for wasm32).
+parallel = ["dep:rayon"]
+
+[dependencies]
+rayon = { version = "1.10", optional = true }
+web-time = "1.1"
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "smo"
+harness = false

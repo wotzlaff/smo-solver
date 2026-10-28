@@ -1,16 +1,52 @@
-[tool.poetry]
-name = "nimsmo"
-version = "0.1.2"
-description = ""
-authors = ["Nico Strasdat <Nico.Strasdat@tu-dresden.de>"]
-build = "build.py"
-
-[tool.poetry.dependencies]
-python = "^3.9"
-nython = "^0.1.1"
-
-[tool.poetry.dev-dependencies]
-
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "svm-smo"
+description = "Fast SMO solver (Rust) for smoothed and weighted support vector machines"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Nico Strasdat", email = "nstrasdat@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23"]
+dynamic = ["version"]
+keywords = ["svm", "support vector machine", "smo", "kernel methods", "optimization"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.optional-dependencies]
+sklearn = ["scikit-learn>=1.2"]
+
+[project.urls]
+Homepage = "https://wotzlaff.github.io/svm-site/"
+Repository = "https://github.com/wotzlaff/svm-smo"
+
+[dependency-groups]
+dev = ["pytest>=8", "scipy>=1.10", "scikit-learn>=1.2", "maturin>=1.7,<2", "ruff>=0.6"]
+
+[tool.maturin]
+manifest-path = "crates/svm-smo-py/Cargo.toml"
+python-source = "python"
+module-name = "svm_smo._core"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "NPY"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["svm_smo"]
