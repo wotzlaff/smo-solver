@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Faster SMO (same iterates): distances to the bounds are kept as arrays, extremal-value scans
+  and the second-order search work block-wise with a division-free filter, AVX2 kernels with
+  run-time detection (scalar fallback), lazy compaction of cached rows on shrinking.
+  ε-regression n = 5000: 38 s → 11 s, classification n = 5000: 1.3 s → 0.6 s.
+
 ## 0.1.0 – unreleased
 
 Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legacy-nim`).

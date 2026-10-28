@@ -35,7 +35,7 @@ def main() -> None:
     parser.add_argument("--lam", type=float, default=0.01)
     args = parser.parse_args()
     gamma, lam = 0.1, args.lam
-    print(f"{'task':<14}{'n':>7}{'smo_solver [s]':>13}{'libsvm [s]':>12}{'steps':>9}{'max |Δf|':>11}")
+    print(f"{'task':<14}{'n':>7}{'smo_solver [s]':>15}{'libsvm [s]':>12}{'steps':>9}{'libsvm steps':>14}{'max |Δf|':>11}")
     for n in args.sizes:
         x, y, t = data(n)
         xs = x[:200]
@@ -58,7 +58,7 @@ def main() -> None:
             ref, t_ref = timed(ref_fn)
             ours = smo_solver.kernel_matrix(xs, x, gamma=gamma) @ (res.beta / lam) + res.b
             diff = np.abs(ours - getattr(ref, method)(xs)).max()
-            print(f"{task:<14}{n:>7}{t_ours:>13.3f}{t_ref:>12.3f}{res.steps:>9}{diff:>11.1e}")
+            print(f"{task:<14}{n:>7}{t_ours:>15.3f}{t_ref:>12.3f}{res.steps:>9}{int(np.sum(ref.n_iter_)):>14}{diff:>11.1e}")
 
 
 if __name__ == "__main__":

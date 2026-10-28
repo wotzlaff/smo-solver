@@ -1,6 +1,8 @@
-//! Profiling driver: `cargo run --release --example profile -- [reg|cls] [n]`.
+//! Profiling driver: `cargo run --release --example profile -- [reg|cls] [n] [one-sided|mvp]`.
 
-use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions};
+use smo_solver::{
+    solve, DualProblem, FeatureKernel, KernelFunction, SmoOptions, WorkingSetSelection,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -30,7 +32,18 @@ fn main() {
         let t: Vec<f64> = f.iter().map(|&v| v + 0.1 * rnd()).collect();
         DualProblem::regression(&t, 0.01, None, 0.1, 0.0, None).unwrap()
     };
-    let r = solve(&kernel, &prob, &SmoOptions::default()).unwrap();
+    let opt = match args.get(3).map(String::as_str) {
+        Some("one-sided") => SmoOptions {
+            two_sided: false,
+            ..SmoOptions::default()
+        },
+        Some("mvp") => SmoOptions {
+            working_set: WorkingSetSelection::MaximalViolatingPair,
+            ..SmoOptions::default()
+        },
+        _ => SmoOptions::default(),
+    };
+    let r = solve(&kernel, &prob, &opt).unwrap();
     println!(
         "{task} n={n}: {:.3}s steps={} hits={} misses={} gap={:.2e}",
         r.elapsed, r.steps, r.cache_hits, r.cache_misses, r.gap

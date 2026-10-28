@@ -110,13 +110,14 @@ indicative only):
 
 | task | n | smo-solver | LIBSVM | SMO steps (smo-solver / LIBSVM) |
 |---|---:|---:|---:|---:|
-| classification | 2000 | 0.12–0.18 s | 0.12 s | 13 996 / 14 125 |
-| classification | 5000 | 1.2–1.4 s | 0.71 s | 51 759 / 51 754 |
-| ε-regression | 2000 | 1.2–1.4 s | 0.67 s | 42 591 / 44 255 |
-| ε-regression | 5000 | 24 s | 9.8 s | 286 566 / 304 960 |
+| classification | 2000 | 0.08 s | 0.10 s | 13 996 / 14 125 |
+| classification | 5000 | 0.60 s | 0.73 s | 51 759 / 51 754 |
+| ε-regression | 2000 | 0.51 s | 0.55 s | 42 591 / 44 255 |
+| ε-regression | 5000 | 11.1 s | 9.6 s | 387 707 / 304 960 |
 
-The number of steps matches LIBSVM; the remaining factor of about 1.5–2.5 per step is a known
-optimisation target (see the roadmap). Decision values agree to about `1e-3`.
+Classification needs as many steps as LIBSVM; for ε-regression it needs up to ~25 % more at
+larger `n`. The loops over the active set use AVX2 when available (detected at run time).
+Decision values agree to about `1e-3`.
 
 ## Testing
 
