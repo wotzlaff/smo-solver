@@ -28,6 +28,7 @@ pub mod kernel;
 pub mod measures;
 pub mod model;
 pub mod problem;
+mod simd;
 pub mod solver;
 
 pub use kernel::{FeatureKernel, Kernel, KernelFunction, PrecomputedKernel};

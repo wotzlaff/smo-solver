@@ -24,9 +24,10 @@ use crate::clock::Instant;
 use crate::cache::RowCache;
 use crate::kernel::Kernel;
 use crate::problem::{DualProblem, ProblemError};
+use crate::simd::{self, Block, Candidates};
 
 /// Lower bound for the curvature along a pair direction (guards against non-PSD kernels).
-const TAU: f64 = 1e-12;
+pub(crate) const TAU: f64 = 1e-12;
 
 /// Working set selection rule.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -223,17 +224,10 @@ impl Extremes {
     }
 
     /// Accounts for a block of variables of group `0` starting at `base`, given their distances
-    /// to the bounds. Branch-free (vectorisable); the position is only located if the block
-    /// improves an extremum.
+    /// to the bounds. The position is only located if the block improves an extremum.
     #[inline(always)]
     fn visit_block(&mut self, base: usize, g: &[f64], room_down: &[f64], room_up: &[f64]) {
-        let (mut bmax, mut bmin) = (f64::NEG_INFINITY, f64::INFINITY);
-        for ((&gv, &rd), &ru) in g.iter().zip(room_down).zip(room_up) {
-            let down = if rd > 0.0 { gv } else { f64::NEG_INFINITY };
-            let up = if ru > 0.0 { gv } else { f64::INFINITY };
-            bmax = if down > bmax { down } else { bmax };
-            bmin = if up < bmin { up } else { bmin };
-        }
+        let (bmax, bmin) = simd::extremal_values(g, room_down, room_up);
         if bmax > self.down_max[0] {
             let k = g
                 .iter()
@@ -479,34 +473,29 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             }
         };
         let (room_down, room_up) = (&self.room_down[..m], &self.room_up[..m]);
+        let cand = Candidates {
+            gi0,
+            gj1,
+            ci,
+            cj,
+            two_inv_lambda,
+            room_i,
+            room_j,
+            unbounded,
+            two_sided,
+        };
         let mut best = (f64::NEG_INFINITY, i0, j1);
         for start in (0..m).step_by(BLOCK) {
             let end = (start + BLOCK).min(m);
-            // branch-free, division-free filter: the decrease is at most `d²/(2 eta)` and at most
-            // `d tmax` (bounded steps only); skip blocks without a candidate that could beat `best`
-            let mut any = false;
-            for k in start..end {
-                let (ru, gv) = (room_up[k], g[k]);
-                let d = gi0 - gv;
-                let eta = ci + cdiag[k] - two_inv_lambda * row_i[k];
-                let eta = if eta > TAU { eta } else { TAU };
-                let tmax = if room_i < ru { room_i } else { ru };
-                any |= (ru > 0.0)
-                    & (d > 0.0)
-                    & (d * d > 2.0 * eta * best.0)
-                    & (unbounded | (d * tmax > best.0));
-                if two_sided {
-                    let (rd, d) = (room_down[k], gv - gj1);
-                    let eta = cdiag[k] + cj - two_inv_lambda * row_j[k];
-                    let eta = if eta > TAU { eta } else { TAU };
-                    let tmax = if rd < room_j { rd } else { room_j };
-                    any |= (rd > 0.0)
-                        & (d > 0.0)
-                        & (d * d > 2.0 * eta * best.0)
-                        & (unbounded | (d * tmax > best.0));
-                }
-            }
-            if !any {
+            let block = Block {
+                g: &g[start..end],
+                cdiag: &cdiag[start..end],
+                row_i: &row_i[start..end],
+                row_j: &row_j[start..end],
+                room_down: &room_down[start..end],
+                room_up: &room_up[start..end],
+            };
+            if !cand.may_improve(best.0, &block) {
                 continue;
             }
             for pos in start..end {
@@ -621,9 +610,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             for start in (0..m).step_by(BLOCK) {
                 let end = (start + BLOCK).min(m);
                 let g = &mut self.g[start..end];
-                for ((g, &kj), &ki) in g.iter_mut().zip(&rj[start..end]).zip(&ri[start..end]) {
-                    *g += tl * (kj - ki);
-                }
+                simd::add_scaled_diff(g, &ri[start..end], &rj[start..end], tl);
                 ex.visit_block(start, g, &rd[start..end], &ru[start..end]);
             }
         }
