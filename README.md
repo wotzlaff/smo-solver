@@ -1,5 +1,8 @@
 # smo-solver
 
+[![PyPI](https://img.shields.io/pypi/v/smo-solver)](https://pypi.org/project/smo-solver/)
+[![CI](https://github.com/wotzlaff/smo-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/wotzlaff/smo-solver/actions/workflows/ci.yml)
+
 **Fast Sequential Minimal Optimization (SMO) for smoothed, weighted and ν-constrained support vector machines — written in Rust, usable from Python.**
 
 `smo-solver` solves the dual training problem of kernel support vector machines for a whole
