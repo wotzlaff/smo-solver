@@ -98,6 +98,22 @@ loss is quadratic on an interval. The decision function is `f(x) = 1/λ Σ_k β_
 uses the same scaling as LIBSVM; with `δ = 0` and `λ = 1/C` the solutions coincide with
 `sklearn.svm.SVC`/`SVR`.
 
+## Performance
+
+Training time against LIBSVM (`sklearn.svm.SVC`/`SVR`, same `C = 1/λ`, `γ = 0.1`, tolerance
+`1e-3`) on synthetic data with 10 features (`benchmarks/bench_vs_libsvm.py`, single machine,
+indicative only):
+
+| task | n | svm-smo | LIBSVM | SMO steps (svm-smo / LIBSVM) |
+|---|---:|---:|---:|---:|
+| classification | 2000 | 0.12–0.18 s | 0.12 s | 13 996 / 14 125 |
+| classification | 5000 | 1.2–1.4 s | 0.71 s | 51 759 / 51 754 |
+| ε-regression | 2000 | 1.2–1.4 s | 0.67 s | 42 591 / 44 255 |
+| ε-regression | 5000 | 24 s | 9.8 s | 286 566 / 304 960 |
+
+The number of steps matches LIBSVM; the remaining factor of about 1.5–2.5 per step is a known
+optimisation target (see the roadmap). Decision values agree to about `1e-3`.
+
 ## Testing
 
 ```bash
