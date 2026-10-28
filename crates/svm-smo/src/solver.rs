@@ -176,6 +176,38 @@ struct Extremes {
     free_cnt: [usize; 2],
 }
 
+impl Extremes {
+    fn new() -> Self {
+        Self {
+            down_max: [f64::NEG_INFINITY; 2],
+            down_arg: [usize::MAX; 2],
+            up_min: [f64::INFINITY; 2],
+            up_arg: [usize::MAX; 2],
+            free_sum: [0.0; 2],
+            free_cnt: [0; 2],
+        }
+    }
+
+    /// Accounts for the variable at `pos` with value `a`, bounds `lo`, `hi` and gradient `gv`.
+    #[inline(always)]
+    fn visit(&mut self, pos: usize, grp: usize, a: f64, lo: f64, hi: f64, gv: f64) {
+        let can_down = a > lo;
+        let can_up = a < hi;
+        if can_down && gv > self.down_max[grp] {
+            self.down_max[grp] = gv;
+            self.down_arg[grp] = pos;
+        }
+        if can_up && gv < self.up_min[grp] {
+            self.up_min[grp] = gv;
+            self.up_arg[grp] = pos;
+        }
+        if can_down && can_up {
+            self.free_sum[grp] += gv;
+            self.free_cnt[grp] += 1;
+        }
+    }
+}
+
 /// Solver state. All per-variable arrays are stored in a permuted order such that the active
 /// variables form the prefix `0..n_active` (as in LIBSVM); `perm[pos]` is the original index.
 struct Smo<'a, K: Kernel + ?Sized> {
@@ -192,8 +224,10 @@ struct Smo<'a, K: Kernel + ?Sized> {
     /// `K[k(i), k(i)] / λ + q_i`
     cdiag: Vec<f64>,
     alpha: Vec<f64>,
+    /// Dual gradient `ka_i + q_i α_i + p_i`, updated incrementally on the active prefix.
     g: Vec<f64>,
-    ka: Vec<f64>,
+    /// Extremal gradients computed by the last [`Smo::update`].
+    pending: Option<Extremes>,
     n_active: usize,
     cache: RowCache,
     inv_lambda: f64,
@@ -238,7 +272,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 .collect(),
             alpha: vec![0.0; n],
             g: prob.p.clone(),
-            ka: vec![0.0; n],
+            pending: None,
             n_active: n,
             cache: RowCache::new(kernel.len(), prob.kernel_index.clone(), capacity),
             inv_lambda,
@@ -291,8 +325,9 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         }
         self.alpha.copy_from_slice(alpha0);
         self.asum = asum.min(self.max_asum);
-        self.recompute_ka();
-        self.value = p.dual_objective(&self.alpha, &self.ka);
+        let ka = self.compute_ka();
+        self.value = p.dual_objective(&self.alpha, &ka);
+        self.set_gradient(&ka);
         Ok(())
     }
 
@@ -301,43 +336,27 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         self.constrained && self.asum >= self.max_asum
     }
 
-    /// Updates the gradient on the active set and collects extremal values.
-    fn scan(&mut self) -> Extremes {
-        let mut ex = Extremes {
-            down_max: [f64::NEG_INFINITY; 2],
-            down_arg: [usize::MAX; 2],
-            up_min: [f64::INFINITY; 2],
-            up_arg: [usize::MAX; 2],
-            free_sum: [0.0; 2],
-            free_cnt: [0; 2],
-        };
+    /// Sets `g = ka + q α + p` for all variables.
+    fn set_gradient(&mut self, ka: &[f64]) {
+        for (pos, g) in self.g.iter_mut().enumerate() {
+            *g = ka[pos] + self.q[pos] * self.alpha[pos] + self.p[pos];
+        }
+    }
+
+    /// Collects the extremal gradients on the active set.
+    fn scan(&self) -> Extremes {
         let m = self.n_active;
-        let (alpha, ka, q, p) = (&self.alpha[..m], &self.ka[..m], &self.q[..m], &self.p[..m]);
-        let (lo, hi, sign, g) = (
+        let mut ex = Extremes::new();
+        let (alpha, lo, hi, sign, g) = (
+            &self.alpha[..m],
             &self.lo[..m],
             &self.hi[..m],
             &self.sign[..m],
-            &mut self.g[..m],
+            &self.g[..m],
         );
         for pos in 0..m {
-            let a = alpha[pos];
-            let gv = ka[pos] + q[pos] * a + p[pos];
-            g[pos] = gv;
             let grp = usize::from(self.constrained && sign[pos] < 0.0);
-            let can_down = a > lo[pos];
-            let can_up = a < hi[pos];
-            if can_down && gv > ex.down_max[grp] {
-                ex.down_max[grp] = gv;
-                ex.down_arg[grp] = pos;
-            }
-            if can_up && gv < ex.up_min[grp] {
-                ex.up_min[grp] = gv;
-                ex.up_arg[grp] = pos;
-            }
-            if can_down && can_up {
-                ex.free_sum[grp] += gv;
-                ex.free_cnt[grp] += 1;
-            }
+            ex.visit(pos, grp, alpha[pos], lo[pos], hi[pos], g[pos]);
         }
         ex
     }
@@ -406,9 +425,13 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                     if cross {
                         tmax = tmax.min(half_slack);
                     }
-                    let dec = decrease(gi0 - gv, eta, tmax);
-                    if dec > best.0 {
-                        best = (dec, i0, pos);
+                    let d = gi0 - gv;
+                    // `d²/(2 eta)` bounds the decrease from above: skip the division
+                    if d * d > 2.0 * eta * best.0 {
+                        let dec = decrease(d, eta, tmax);
+                        if dec > best.0 {
+                            best = (dec, i0, pos);
+                        }
                     }
                 }
             }
@@ -421,9 +444,12 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                     if cross {
                         tmax = tmax.min(half_slack);
                     }
-                    let dec = decrease(gv - gj1, eta, tmax);
-                    if dec > best.0 {
-                        best = (dec, pos, j1);
+                    let d = gv - gj1;
+                    if d * d > 2.0 * eta * best.0 {
+                        let dec = decrease(d, eta, tmax);
+                        if dec > best.0 {
+                            best = (dec, pos, j1);
+                        }
                     }
                 }
             }
@@ -449,6 +475,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         if t <= 0.0 {
             return;
         }
+        let (old_i, old_j) = (self.alpha[i], self.alpha[j]);
         self.alpha[i] = if t == box_i {
             self.lo[i]
         } else {
@@ -467,12 +494,34 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             }
         }
         self.value -= t * (grad_diff - 0.5 * eta * t);
+        // the quadratic term only changes the gradient of the two moved variables
+        self.g[i] += self.q[i] * (self.alpha[i] - old_i);
+        self.g[j] += self.q[j] * (self.alpha[j] - old_j);
+        // fused pass: kernel part of the gradient and its extremal values
         let tl = t * self.inv_lambda;
         let m = self.n_active;
         let (ri, rj) = (&self.cache.row(si)[..m], &self.cache.row(sj)[..m]);
-        for ((ka, &kj), &ki) in self.ka[..m].iter_mut().zip(rj).zip(ri) {
-            *ka += tl * (kj - ki);
+        let (alpha, lo, hi, sign) = (
+            &self.alpha[..m],
+            &self.lo[..m],
+            &self.hi[..m],
+            &self.sign[..m],
+        );
+        for ((g, &kj), &ki) in self.g[..m].iter_mut().zip(rj).zip(ri) {
+            *g += tl * (kj - ki);
         }
+        let mut ex = Extremes::new();
+        if self.constrained {
+            for pos in 0..m {
+                let grp = usize::from(sign[pos] < 0.0);
+                ex.visit(pos, grp, alpha[pos], lo[pos], hi[pos], self.g[pos]);
+            }
+        } else {
+            for pos in 0..m {
+                ex.visit(pos, 0, alpha[pos], lo[pos], hi[pos], self.g[pos]);
+            }
+        }
+        self.pending = Some(ex);
     }
 
     /// Estimates `b` and `c` from the gradient (averages over free variables).
@@ -542,7 +591,6 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             &mut self.cdiag,
             &mut self.alpha,
             &mut self.g,
-            &mut self.ka,
         ] {
             permute(v, &order, &mut fs);
         }
@@ -553,8 +601,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         self.cache.restrict(&keep);
     }
 
-    /// Recomputes `ka` for all variables from scratch.
-    fn recompute_ka(&mut self) {
+    /// Computes `ka` for all variables from scratch.
+    fn compute_ka(&self) -> Vec<f64> {
         let mut beta = vec![0.0; self.kernel.len()];
         for (&k, &a) in self.kidx.iter().zip(&self.alpha) {
             beta[k] += a;
@@ -576,15 +624,14 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         };
         #[cfg(not(feature = "parallel"))]
         let kam: Vec<f64> = (0..n_samples).map(compute).collect();
-        for (ka, &k) in self.ka.iter_mut().zip(&self.kidx) {
-            *ka = kam[k];
-        }
+        self.kidx.iter().map(|&k| kam[k]).collect()
     }
 
     fn unshrink(&mut self) {
         self.n_active = self.perm.len();
         self.cache.reset(self.kidx.clone());
-        self.recompute_ka();
+        let ka = self.compute_ka();
+        self.set_gradient(&ka);
     }
 
     /// `v` in the original variable order.
@@ -627,7 +674,10 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 }
             }
 
-            let ex = self.scan();
+            let ex = match self.pending.take() {
+                Some(ex) => ex,
+                None => self.scan(),
+            };
             let (violation, i0, j1) = self.maximal_violating_pair(&ex);
             self.violation = violation.max(0.0);
             if violation <= opt.tol {
@@ -665,7 +715,10 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         let (violation, _, _) = self.maximal_violating_pair(&ex);
         let (b, c) = self.bias(&ex);
         let alpha = self.unpermuted(&self.alpha);
-        let ka = self.unpermuted(&self.ka);
+        let ka_perm: Vec<f64> = (0..self.g.len())
+            .map(|pos| self.g[pos] - self.q[pos] * self.alpha[pos] - self.p[pos])
+            .collect();
+        let ka = self.unpermuted(&ka_perm);
         let p = self.prob;
         let dual = p.dual_objective(&alpha, &ka);
         let primal = p.primal_objective(&alpha, &ka, b, c);

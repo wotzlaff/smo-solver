@@ -124,11 +124,16 @@ impl RowCache {
     /// Keeps only the columns `p` with `keep[p] == true` in all cached rows.
     pub(crate) fn restrict(&mut self, keep: &[bool]) {
         debug_assert_eq!(keep.len(), self.cols.len());
-        let mut it = keep.iter();
-        self.cols.retain(|_| *it.next().unwrap());
+        let kept: Vec<usize> = (0..keep.len()).filter(|&p| keep[p]).collect();
+        for (w, &p) in kept.iter().enumerate() {
+            self.cols[w] = self.cols[p];
+        }
+        self.cols.truncate(kept.len());
         for slot in &mut self.slots {
-            let mut it = keep.iter();
-            slot.row.retain(|_| *it.next().unwrap());
+            for (w, &p) in kept.iter().enumerate() {
+                slot.row[w] = slot.row[p];
+            }
+            slot.row.truncate(kept.len());
         }
     }
 
