@@ -1,0 +1,26 @@
+# Changelog
+
+## 0.1.0 – unreleased
+
+Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legacy-nim`).
+
+### Added
+- Rust crate `svm-smo`: SMO for a general separable quadratic dual (hinge, ε-insensitive,
+  quadratically smoothed variants, least squares) with sample weights and an optional 1-norm
+  constraint; working set rules MVP / maximal unbounded decrease / maximal decrease
+  (one- or two-sided); shrinking; LRU kernel row cache; warm start; callbacks; time limit;
+  duality gap and bound-aware violation measure.
+- Kernels: RBF, linear, polynomial, precomputed. Optional rayon parallelism; the core crate
+  builds for `wasm32-unknown-unknown`.
+- Python package `svm_smo` (PyO3, abi3 wheels for Python ≥ 3.10): zero-copy NumPy input,
+  GIL released during training, `Ctrl-C` support, type stubs, scikit-learn estimators
+  `SmoSVC` (incl. one-vs-rest), `SmoSVR`, `SmoLSSVR`.
+- Tests against duality gap, closed-form LS-SVM, LIBSVM, SciPy and cvxpy; property tests;
+  criterion and LIBSVM benchmarks; GitHub Actions for CI and wheel releases.
+
+### Fixed (compared to `nimsmo`)
+- step counter and status are reported correctly on time limit / callback termination
+- time limit uses wall-clock time instead of CPU time
+- pairs that decrease the 1-norm are no longer excluded while the constraint is active
+- consistent meaning of `shrinking_period = 0` for all problem types
+- bias estimated from free variables instead of the midpoint of the violating pair

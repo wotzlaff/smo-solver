@@ -217,7 +217,7 @@ fn slice<'a>(a: &'a PyReadonlyArray1<'_, f64>, name: &str) -> PyResult<&'a [f64]
 }
 
 macro_rules! run_args {
-    ($tol:expr, $max_steps:expr, $time_limit:expr, $working_set:expr, $shrinking:expr,
+    ($tol:expr, $max_steps:expr, $time_limit:expr, $working_set:expr, $two_sided:expr, $shrinking:expr,
      $shrinking_period:expr, $cache_size_mb:expr, $callback_period:expr, $alpha0:expr, $callback:expr) => {
         Run {
             options: SmoOptions {
@@ -225,6 +225,7 @@ macro_rules! run_args {
                 max_steps: $max_steps,
                 time_limit: $time_limit,
                 working_set: working_set($working_set)?,
+                two_sided: $two_sided,
                 shrinking: $shrinking,
                 shrinking_period: $shrinking_period,
                 cache_size_mb: $cache_size_mb,
@@ -243,7 +244,7 @@ macro_rules! run_args {
 #[pyo3(signature = (
     x, y, lam, *, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None, shift=1.0,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -264,6 +265,7 @@ fn solve_classification(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    two_sided: bool,
     shrinking: bool,
     shrinking_period: u64,
     cache_size_mb: f64,
@@ -282,6 +284,7 @@ fn solve_classification(
         max_steps,
         time_limit,
         working_set,
+        two_sided,
         shrinking,
         shrinking_period,
         cache_size_mb,
@@ -298,7 +301,7 @@ fn solve_classification(
 #[pyo3(signature = (
     x, y, lam, *, epsilon=0.1, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -319,6 +322,7 @@ fn solve_regression(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    two_sided: bool,
     shrinking: bool,
     shrinking_period: u64,
     cache_size_mb: f64,
@@ -337,6 +341,7 @@ fn solve_regression(
         max_steps,
         time_limit,
         working_set,
+        two_sided,
         shrinking,
         shrinking_period,
         cache_size_mb,
@@ -351,7 +356,7 @@ fn solve_regression(
 #[pyfunction]
 #[pyo3(signature = (
     x, y, lam, *, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None,
-    tol=1e-3, max_steps=100_000_000, time_limit=None, working_set="md",
+    tol=1e-3, max_steps=100_000_000, time_limit=None, working_set="md", two_sided=true,
     cache_size_mb=256.0, alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -369,6 +374,7 @@ fn solve_least_squares(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    two_sided: bool,
     cache_size_mb: f64,
     alpha0: Option<PyReadonlyArray1<'_, f64>>,
     callback: Option<Py<PyAny>>,
@@ -385,6 +391,7 @@ fn solve_least_squares(
         max_steps,
         time_limit,
         working_set,
+        two_sided,
         false,
         0,
         cache_size_mb,
@@ -404,7 +411,7 @@ fn solve_least_squares(
 #[pyo3(signature = (
     x, lam, q, p, lo, hi, *, kernel_index=None, sign=None, max_asum=None, kernel="rbf",
     gamma=1.0, coef0=0.0, degree=3, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -427,6 +434,7 @@ fn solve_dual(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    two_sided: bool,
     shrinking: bool,
     shrinking_period: u64,
     cache_size_mb: f64,
@@ -455,6 +463,7 @@ fn solve_dual(
         max_steps,
         time_limit,
         working_set,
+        two_sided,
         shrinking,
         shrinking_period,
         cache_size_mb,

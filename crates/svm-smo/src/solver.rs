@@ -51,6 +51,9 @@ pub struct SmoOptions {
     pub time_limit: Option<f64>,
     /// Working set selection rule.
     pub working_set: WorkingSetSelection,
+    /// Second-order rules: search a partner for both indices of the maximal violating pair
+    /// (Strasdat, Def. 7.27/7.28) instead of only for the first one (as in LIBSVM).
+    pub two_sided: bool,
     /// Enables shrinking of the active set.
     pub shrinking: bool,
     /// Number of steps between two shrinking attempts (`0`: `min(n, 1000)`).
@@ -72,6 +75,7 @@ impl Default for SmoOptions {
             max_steps: 100_000_000,
             time_limit: None,
             working_set: WorkingSetSelection::default(),
+            two_sided: true,
             shrinking: true,
             shrinking_period: 0,
             shrinking_exponent: 0.5,
@@ -172,23 +176,40 @@ struct Extremes {
     free_cnt: [usize; 2],
 }
 
+/// Solver state. All per-variable arrays are stored in a permuted order such that the active
+/// variables form the prefix `0..n_active` (as in LIBSVM); `perm[pos]` is the original index.
 struct Smo<'a, K: Kernel + ?Sized> {
     kernel: &'a K,
     prob: &'a DualProblem,
     opt: &'a SmoOptions,
+    perm: Vec<usize>,
+    kidx: Vec<usize>,
+    lo: Vec<f64>,
+    hi: Vec<f64>,
+    q: Vec<f64>,
+    p: Vec<f64>,
+    sign: Vec<f64>,
+    /// `K[k(i), k(i)] / λ + q_i`
+    cdiag: Vec<f64>,
     alpha: Vec<f64>,
     g: Vec<f64>,
     ka: Vec<f64>,
-    kdiag: Vec<f64>,
-    /// Active variables; cache columns are `kernel_index[active[p]]`.
-    active: Vec<usize>,
+    n_active: usize,
     cache: RowCache,
+    inv_lambda: f64,
     constrained: bool,
     max_asum: f64,
     asum: f64,
     violation: f64,
     value: f64,
     start: Instant,
+}
+
+/// Reorders `v` such that `v_new[pos] = v[order[pos]]`.
+fn permute<T: Copy>(v: &mut [T], order: &[usize], scratch: &mut Vec<T>) {
+    scratch.clear();
+    scratch.extend(order.iter().map(|&o| v[o]));
+    v.copy_from_slice(scratch);
 }
 
 impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
@@ -199,19 +220,28 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         alpha0: Option<&[f64]>,
     ) -> Result<Self, ProblemError> {
         let n = prob.len();
-        let active: Vec<usize> = (0..n).collect();
-        let cols: Vec<usize> = prob.kernel_index.clone();
+        let inv_lambda = 1.0 / prob.lambda;
         let capacity = RowCache::capacity_for(opt.cache_size_mb, n);
         let mut smo = Self {
             kernel,
             prob,
             opt,
+            perm: (0..n).collect(),
+            kidx: prob.kernel_index.clone(),
+            lo: prob.lo.clone(),
+            hi: prob.hi.clone(),
+            q: prob.q.clone(),
+            p: prob.p.clone(),
+            sign: prob.sign.clone(),
+            cdiag: (0..n)
+                .map(|i| kernel.diag(prob.kernel_index[i]) * inv_lambda + prob.q[i])
+                .collect(),
             alpha: vec![0.0; n],
             g: prob.p.clone(),
             ka: vec![0.0; n],
-            kdiag: prob.kernel_index.iter().map(|&k| kernel.diag(k)).collect(),
-            active,
-            cache: RowCache::new(kernel.len(), cols, capacity),
+            n_active: n,
+            cache: RowCache::new(kernel.len(), prob.kernel_index.clone(), capacity),
+            inv_lambda,
             constrained: prob.max_asum.is_some(),
             max_asum: prob.max_asum.unwrap_or(f64::INFINITY),
             asum: 0.0,
@@ -225,6 +255,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         Ok(smo)
     }
 
+    /// Sets the initial point (called before any permutation took place).
     fn warm_start(&mut self, alpha0: &[f64]) -> Result<(), ProblemError> {
         let p = self.prob;
         let n = p.len();
@@ -272,7 +303,6 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
 
     /// Updates the gradient on the active set and collects extremal values.
     fn scan(&mut self) -> Extremes {
-        let p = self.prob;
         let mut ex = Extremes {
             down_max: [f64::NEG_INFINITY; 2],
             down_arg: [usize::MAX; 2],
@@ -281,13 +311,21 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             free_sum: [0.0; 2],
             free_cnt: [0; 2],
         };
-        for (pos, &v) in self.active.iter().enumerate() {
-            let a = self.alpha[v];
-            let gv = self.ka[v] + p.q[v] * a + p.p[v];
-            self.g[v] = gv;
-            let grp = usize::from(self.constrained && p.sign[v] < 0.0);
-            let can_down = a > p.lo[v];
-            let can_up = a < p.hi[v];
+        let m = self.n_active;
+        let (alpha, ka, q, p) = (&self.alpha[..m], &self.ka[..m], &self.q[..m], &self.p[..m]);
+        let (lo, hi, sign, g) = (
+            &self.lo[..m],
+            &self.hi[..m],
+            &self.sign[..m],
+            &mut self.g[..m],
+        );
+        for pos in 0..m {
+            let a = alpha[pos];
+            let gv = ka[pos] + q[pos] * a + p[pos];
+            g[pos] = gv;
+            let grp = usize::from(self.constrained && sign[pos] < 0.0);
+            let can_down = a > lo[pos];
+            let can_up = a < hi[pos];
             if can_down && gv > ex.down_max[grp] {
                 ex.down_max[grp] = gv;
                 ex.down_arg[grp] = pos;
@@ -323,81 +361,86 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         best
     }
 
-    /// Maximal step for moving from variable `i` to variable `j`.
-    #[inline]
-    fn max_step(&self, i: usize, j: usize) -> f64 {
-        let p = self.prob;
-        let mut t = (self.alpha[i] - p.lo[i]).min(p.hi[j] - self.alpha[j]);
-        if self.constrained && p.sign[j] > p.sign[i] {
-            t = t.min(0.5 * (self.max_asum - self.asum).max(0.0));
-        }
-        t
-    }
-
-    #[inline]
-    fn curvature(&self, i: usize, j: usize, kij: f64) -> f64 {
-        let p = self.prob;
-        ((self.kdiag[i] + self.kdiag[j] - 2.0 * kij) / p.lambda + p.q[i] + p.q[j]).max(TAU)
-    }
-
-    #[inline]
-    fn predicted_decrease(&self, i: usize, j: usize, grad_diff: f64, eta: f64) -> f64 {
-        match self.opt.working_set {
-            WorkingSetSelection::MaximalUnboundedDecrease => 0.5 * grad_diff * grad_diff / eta,
-            _ => {
-                let t = (grad_diff / eta).min(self.max_step(i, j));
-                t * (grad_diff - 0.5 * eta * t)
-            }
-        }
-    }
-
-    /// Second-order working set selection (Strasdat, Def. 7.27/7.28).
+    /// Second-order working set selection (Strasdat, Def. 7.27/7.28): the MVP partner of
+    /// either `i0` or `j1` is replaced by the variable with the largest predicted decrease.
     fn second_order_pair(&mut self, i0: usize, j1: usize) -> (usize, usize) {
-        let si = self
-            .cache
-            .ensure(self.kernel, self.prob.kernel_index[self.active[i0]]);
-        let sj = self
-            .cache
-            .ensure(self.kernel, self.prob.kernel_index[self.active[j1]]);
-        let (vi0, vj1) = (self.active[i0], self.active[j1]);
-        let (gi0, gj1) = (self.g[vi0], self.g[vj1]);
+        let si = self.cache.ensure(self.kernel, self.kidx[i0]);
+        let sj = self.cache.ensure(self.kernel, self.kidx[j1]);
+        let m = self.n_active;
+        let (row_i, row_j) = (&self.cache.row(si)[..m], &self.cache.row(sj)[..m]);
+        let (alpha, g, cdiag) = (&self.alpha[..m], &self.g[..m], &self.cdiag[..m]);
+        let (lo, hi, sign) = (&self.lo[..m], &self.hi[..m], &self.sign[..m]);
+        let (gi0, gj1) = (g[i0], g[j1]);
+        let (ci, cj) = (cdiag[i0], cdiag[j1]);
+        let room_i = alpha[i0] - lo[i0];
+        let room_j = hi[j1] - alpha[j1];
+        let two_inv_lambda = 2.0 * self.inv_lambda;
+        let unbounded = self.opt.working_set == WorkingSetSelection::MaximalUnboundedDecrease;
+        let constrained = self.constrained;
+        let half_slack = if constrained {
+            0.5 * (self.max_asum - self.asum).max(0.0)
+        } else {
+            f64::INFINITY
+        };
         let block_up = self.at_asum_bound();
-        let p = self.prob;
+        let two_sided = self.opt.two_sided;
+        // predicted decrease for gradient difference `d`, curvature `eta` and maximal step `tmax`
+        let decrease = |d: f64, eta: f64, tmax: f64| -> f64 {
+            if unbounded {
+                0.5 * d * d / eta
+            } else {
+                let t = (d / eta).min(tmax);
+                t * (d - 0.5 * eta * t)
+            }
+        };
         let mut best = (f64::NEG_INFINITY, i0, j1);
-        for (pos, &v) in self.active.iter().enumerate() {
-            let a = self.alpha[v];
-            let gv = self.g[v];
-            // partner j = v for fixed i0
-            if a < p.hi[v] && gi0 > gv && !(block_up && p.sign[v] > p.sign[vi0]) {
-                let eta = self.curvature(vi0, v, self.cache.row(si)[pos]);
-                let dec = self.predicted_decrease(vi0, v, gi0 - gv, eta);
-                if dec > best.0 {
-                    best = (dec, i0, pos);
+        for pos in 0..m {
+            let a = alpha[pos];
+            let gv = g[pos];
+            // partner j = pos for fixed i0
+            if a < hi[pos] && gi0 > gv {
+                let cross = constrained && sign[pos] > sign[i0];
+                if !(block_up && cross) {
+                    let eta = (ci + cdiag[pos] - two_inv_lambda * row_i[pos]).max(TAU);
+                    let mut tmax = room_i.min(hi[pos] - a);
+                    if cross {
+                        tmax = tmax.min(half_slack);
+                    }
+                    let dec = decrease(gi0 - gv, eta, tmax);
+                    if dec > best.0 {
+                        best = (dec, i0, pos);
+                    }
                 }
             }
-            // partner i = v for fixed j1
-            if a > p.lo[v] && gv > gj1 && !(block_up && p.sign[vj1] > p.sign[v]) {
-                let eta = self.curvature(v, vj1, self.cache.row(sj)[pos]);
-                let dec = self.predicted_decrease(v, vj1, gv - gj1, eta);
-                if dec > best.0 {
-                    best = (dec, pos, j1);
+            // partner i = pos for fixed j1
+            if two_sided && a > lo[pos] && gv > gj1 {
+                let cross = constrained && sign[j1] > sign[pos];
+                if !(block_up && cross) {
+                    let eta = (cdiag[pos] + cj - two_inv_lambda * row_j[pos]).max(TAU);
+                    let mut tmax = (a - lo[pos]).min(room_j);
+                    if cross {
+                        tmax = tmax.min(half_slack);
+                    }
+                    let dec = decrease(gv - gj1, eta, tmax);
+                    if dec > best.0 {
+                        best = (dec, pos, j1);
+                    }
                 }
             }
         }
         (best.1, best.2)
     }
 
-    /// Exact minimisation along `e_j - e_i` for active positions `ip`, `jp`.
-    fn update(&mut self, ip: usize, jp: usize) {
-        let p = self.prob;
-        let (vi, vj) = (self.active[ip], self.active[jp]);
-        let si = self.cache.ensure(self.kernel, p.kernel_index[vi]);
-        let sj = self.cache.ensure(self.kernel, p.kernel_index[vj]);
-        let eta = self.curvature(vi, vj, self.cache.row(si)[jp]);
-        let grad_diff = self.g[vi] - self.g[vj];
-        let box_i = self.alpha[vi] - p.lo[vi];
-        let box_j = p.hi[vj] - self.alpha[vj];
-        let half_slack = if self.constrained && p.sign[vj] > p.sign[vi] {
+    /// Exact minimisation along `e_j - e_i` for active positions `i`, `j`.
+    fn update(&mut self, i: usize, j: usize) {
+        let si = self.cache.ensure(self.kernel, self.kidx[i]);
+        let sj = self.cache.ensure(self.kernel, self.kidx[j]);
+        let kij = self.cache.row(si)[j];
+        let eta = (self.cdiag[i] + self.cdiag[j] - 2.0 * kij * self.inv_lambda).max(TAU);
+        let grad_diff = self.g[i] - self.g[j];
+        let box_i = self.alpha[i] - self.lo[i];
+        let box_j = self.hi[j] - self.alpha[j];
+        let half_slack = if self.constrained && self.sign[j] > self.sign[i] {
             0.5 * (self.max_asum - self.asum).max(0.0)
         } else {
             f64::INFINITY
@@ -406,31 +449,29 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         if t <= 0.0 {
             return;
         }
-        self.alpha[vi] = if t == box_i {
-            p.lo[vi]
+        self.alpha[i] = if t == box_i {
+            self.lo[i]
         } else {
-            self.alpha[vi] - t
+            self.alpha[i] - t
         };
-        self.alpha[vj] = if t == box_j {
-            p.hi[vj]
+        self.alpha[j] = if t == box_j {
+            self.hi[j]
         } else {
-            self.alpha[vj] + t
+            self.alpha[j] + t
         };
         if self.constrained {
             if t == half_slack {
                 self.asum = self.max_asum;
             } else {
-                self.asum += t * (p.sign[vj] - p.sign[vi]);
+                self.asum += t * (self.sign[j] - self.sign[i]);
             }
         }
         self.value -= t * (grad_diff - 0.5 * eta * t);
-        let tl = t / p.lambda;
-        let Self {
-            cache, ka, active, ..
-        } = self;
-        let (ri, rj) = (cache.row(si), cache.row(sj));
-        for (pos, &v) in active.iter().enumerate() {
-            ka[v] += tl * (rj[pos] - ri[pos]);
+        let tl = t * self.inv_lambda;
+        let m = self.n_active;
+        let (ri, rj) = (&self.cache.row(si)[..m], &self.cache.row(sj)[..m]);
+        for ((ka, &kj), &ki) in self.ka[..m].iter_mut().zip(rj).zip(ri) {
+            *ka += tl * (kj - ki);
         }
     }
 
@@ -467,39 +508,62 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         }
     }
 
+    /// Moves variables detected as fixed behind the active prefix (stable partition).
     fn shrink(&mut self, ex: &Extremes) {
-        let p = self.prob;
         let (b, c) = self.bias(ex);
         let threshold =
             self.opt.shrinking_factor * self.violation.max(0.0).powf(self.opt.shrinking_exponent);
-        let keep: Vec<bool> = self
-            .active
-            .iter()
-            .map(|&v| {
-                let shifted = self.g[v] + b + p.sign[v] * c;
-                let a = self.alpha[v];
-                let fixed_lo = a <= p.lo[v] && shifted > threshold;
-                let fixed_hi = a >= p.hi[v] && shifted < -threshold;
+        let m = self.n_active;
+        let keep: Vec<bool> = (0..m)
+            .map(|pos| {
+                let shifted = self.g[pos] + b + self.sign[pos] * c;
+                let a = self.alpha[pos];
+                let fixed_lo = a <= self.lo[pos] && shifted > threshold;
+                let fixed_hi = a >= self.hi[pos] && shifted < -threshold;
                 !(fixed_lo || fixed_hi)
             })
             .collect();
-        if keep.iter().all(|&k| k) {
+        let n_keep = keep.iter().filter(|&&k| k).count();
+        if n_keep == m {
             return;
         }
-        let mut it = keep.iter();
-        self.active.retain(|_| *it.next().unwrap());
+        let order: Vec<usize> = (0..m)
+            .filter(|&pos| keep[pos])
+            .chain((0..m).filter(|&pos| !keep[pos]))
+            .chain(m..self.perm.len())
+            .collect();
+        let mut fs = Vec::new();
+        for v in [
+            &mut self.lo,
+            &mut self.hi,
+            &mut self.q,
+            &mut self.p,
+            &mut self.sign,
+            &mut self.cdiag,
+            &mut self.alpha,
+            &mut self.g,
+            &mut self.ka,
+        ] {
+            permute(v, &order, &mut fs);
+        }
+        let mut us = Vec::new();
+        permute(&mut self.perm, &order, &mut us);
+        permute(&mut self.kidx, &order, &mut us);
+        self.n_active = n_keep;
         self.cache.restrict(&keep);
     }
 
     /// Recomputes `ka` for all variables from scratch.
     fn recompute_ka(&mut self) {
-        let p = self.prob;
-        let beta = p.sample_coefficients(&self.alpha);
+        let mut beta = vec![0.0; self.kernel.len()];
+        for (&k, &a) in self.kidx.iter().zip(&self.alpha) {
+            beta[k] += a;
+        }
         let support: Vec<(usize, f64)> = beta
             .iter()
             .enumerate()
             .filter(|(_, &b)| b != 0.0)
-            .map(|(k, &b)| (k, b / p.lambda))
+            .map(|(k, &b)| (k, b * self.inv_lambda))
             .collect();
         let kernel = self.kernel;
         let compute =
@@ -512,15 +576,24 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         };
         #[cfg(not(feature = "parallel"))]
         let kam: Vec<f64> = (0..n_samples).map(compute).collect();
-        for (ka, &k) in self.ka.iter_mut().zip(&p.kernel_index) {
+        for (ka, &k) in self.ka.iter_mut().zip(&self.kidx) {
             *ka = kam[k];
         }
     }
 
     fn unshrink(&mut self) {
-        self.active = (0..self.prob.len()).collect();
-        self.cache.reset(self.prob.kernel_index.clone());
+        self.n_active = self.perm.len();
+        self.cache.reset(self.kidx.clone());
         self.recompute_ka();
+    }
+
+    /// `v` in the original variable order.
+    fn unpermuted(&self, v: &[f64]) -> Vec<f64> {
+        let mut out = vec![0.0; v.len()];
+        for (&o, &x) in self.perm.iter().zip(v) {
+            out[o] = x;
+        }
+        out
     }
 
     fn run<F: FnMut(&Progress) -> bool>(&mut self, mut callback: F) -> SmoResult {
@@ -539,13 +612,14 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 break;
             }
             if opt.callback_period > 0 && steps % opt.callback_period == 0 && steps > 0 {
+                let alpha = self.unpermuted(&self.alpha);
                 let progress = Progress {
                     step: steps,
                     elapsed,
                     violation: self.violation,
                     dual_objective: self.value,
-                    n_active: self.active.len(),
-                    alpha: &self.alpha,
+                    n_active: self.n_active,
+                    alpha: &alpha,
                 };
                 if callback(&progress) {
                     status = Status::Interrupted;
@@ -557,7 +631,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             let (violation, i0, j1) = self.maximal_violating_pair(&ex);
             self.violation = violation.max(0.0);
             if violation <= opt.tol {
-                if self.active.len() < n {
+                if self.n_active < n {
                     self.unshrink();
                     continue;
                 }
@@ -565,9 +639,9 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 break;
             }
             if opt.shrinking && steps > 0 && steps % shrinking_period == 0 {
-                let before = self.active.len();
+                let before = self.n_active;
                 self.shrink(&ex);
-                if self.active.len() < before {
+                if self.n_active < before {
                     steps += 1;
                     continue;
                 }
@@ -583,21 +657,23 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
     }
 
     fn finish(&mut self, status: Status, steps: u64) -> SmoResult {
-        let n_active = self.active.len();
+        let n_active = self.n_active;
         if n_active < self.prob.len() {
             self.unshrink();
         }
         let ex = self.scan();
         let (violation, _, _) = self.maximal_violating_pair(&ex);
         let (b, c) = self.bias(&ex);
+        let alpha = self.unpermuted(&self.alpha);
+        let ka = self.unpermuted(&self.ka);
         let p = self.prob;
-        let dual = p.dual_objective(&self.alpha, &self.ka);
-        let primal = p.primal_objective(&self.alpha, &self.ka, b, c);
+        let dual = p.dual_objective(&alpha, &ka);
+        let primal = p.primal_objective(&alpha, &ka, b, c);
         SmoResult {
-            alpha: std::mem::take(&mut self.alpha),
+            alpha,
             b,
             c,
-            ka: std::mem::take(&mut self.ka),
+            ka,
             status,
             steps,
             elapsed: self.start.elapsed().as_secs_f64(),
