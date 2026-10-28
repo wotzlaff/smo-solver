@@ -208,6 +208,54 @@ impl Extremes {
     }
 }
 
+impl Extremes {
+    /// Like [`Extremes::visit`] without the statistics of the free variables.
+    #[inline(always)]
+    fn visit_lite(&mut self, pos: usize, grp: usize, a: f64, lo: f64, hi: f64, gv: f64) {
+        if a > lo && gv > self.down_max[grp] {
+            self.down_max[grp] = gv;
+            self.down_arg[grp] = pos;
+        }
+        if a < hi && gv < self.up_min[grp] {
+            self.up_min[grp] = gv;
+            self.up_arg[grp] = pos;
+        }
+    }
+
+    /// Accounts for a block of variables of group `0` starting at `base`, given their distances
+    /// to the bounds. Branch-free (vectorisable); the position is only located if the block
+    /// improves an extremum.
+    #[inline(always)]
+    fn visit_block(&mut self, base: usize, g: &[f64], room_down: &[f64], room_up: &[f64]) {
+        let (mut bmax, mut bmin) = (f64::NEG_INFINITY, f64::INFINITY);
+        for ((&gv, &rd), &ru) in g.iter().zip(room_down).zip(room_up) {
+            let down = if rd > 0.0 { gv } else { f64::NEG_INFINITY };
+            let up = if ru > 0.0 { gv } else { f64::INFINITY };
+            bmax = if down > bmax { down } else { bmax };
+            bmin = if up < bmin { up } else { bmin };
+        }
+        if bmax > self.down_max[0] {
+            let k = g
+                .iter()
+                .zip(room_down)
+                .position(|(&gv, &rd)| rd > 0.0 && gv == bmax);
+            self.down_max[0] = bmax;
+            self.down_arg[0] = base + k.unwrap_or(0);
+        }
+        if bmin < self.up_min[0] {
+            let k = g
+                .iter()
+                .zip(room_up)
+                .position(|(&gv, &ru)| ru > 0.0 && gv == bmin);
+            self.up_min[0] = bmin;
+            self.up_arg[0] = base + k.unwrap_or(0);
+        }
+    }
+}
+
+/// Block length of the vectorisable passes over the active set.
+const BLOCK: usize = 64;
+
 /// Solver state. All per-variable arrays are stored in a permuted order such that the active
 /// variables form the prefix `0..n_active` (as in LIBSVM); `perm[pos]` is the original index.
 struct Smo<'a, K: Kernel + ?Sized> {
@@ -224,6 +272,10 @@ struct Smo<'a, K: Kernel + ?Sized> {
     /// `K[k(i), k(i)] / λ + q_i`
     cdiag: Vec<f64>,
     alpha: Vec<f64>,
+    /// `alpha - lo`: how far a variable can move down (`0` at the bound).
+    room_down: Vec<f64>,
+    /// `hi - alpha`: how far a variable can move up (`0` at the bound).
+    room_up: Vec<f64>,
     /// Dual gradient `ka_i + q_i α_i + p_i`, updated incrementally on the active prefix.
     g: Vec<f64>,
     /// Extremal gradients computed by the last [`Smo::update`].
@@ -271,6 +323,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 .map(|i| kernel.diag(prob.kernel_index[i]) * inv_lambda + prob.q[i])
                 .collect(),
             alpha: vec![0.0; n],
+            room_down: vec![0.0; n],
+            room_up: prob.hi.clone(),
             g: prob.p.clone(),
             pending: None,
             n_active: n,
@@ -286,7 +340,17 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         if let Some(a0) = alpha0 {
             smo.warm_start(a0)?;
         }
+        for pos in 0..n {
+            smo.set_rooms(pos);
+        }
         Ok(smo)
+    }
+
+    /// Refreshes the distances to the bounds of the variable at `pos` after a change of its value.
+    #[inline]
+    fn set_rooms(&mut self, pos: usize) {
+        self.room_down[pos] = self.alpha[pos] - self.lo[pos];
+        self.room_up[pos] = self.hi[pos] - self.alpha[pos];
     }
 
     /// Sets the initial point (called before any permutation took place).
@@ -344,6 +408,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
     }
 
     /// Collects the extremal gradients on the active set.
+    #[inline(never)]
     fn scan(&self) -> Extremes {
         let m = self.n_active;
         let mut ex = Extremes::new();
@@ -382,6 +447,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
 
     /// Second-order working set selection (Strasdat, Def. 7.27/7.28): the MVP partner of
     /// either `i0` or `j1` is replaced by the variable with the largest predicted decrease.
+    #[inline(never)]
     fn second_order_pair(&mut self, i0: usize, j1: usize) -> (usize, usize) {
         let si = self.cache.ensure(self.kernel, self.kidx[i0]);
         let sj = self.cache.ensure(self.kernel, self.kidx[j1]);
@@ -412,43 +478,74 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 t * (d - 0.5 * eta * t)
             }
         };
+        let (room_down, room_up) = (&self.room_down[..m], &self.room_up[..m]);
         let mut best = (f64::NEG_INFINITY, i0, j1);
-        for pos in 0..m {
-            let a = alpha[pos];
-            let gv = g[pos];
-            // partner j = pos for fixed i0
-            if a < hi[pos] && gi0 > gv {
-                let cross = constrained && sign[pos] > sign[i0];
-                if !(block_up && cross) {
-                    let eta = (ci + cdiag[pos] - two_inv_lambda * row_i[pos]).max(TAU);
-                    let mut tmax = room_i.min(hi[pos] - a);
-                    if cross {
-                        tmax = tmax.min(half_slack);
-                    }
-                    let d = gi0 - gv;
-                    // `d²/(2 eta)` bounds the decrease from above: skip the division
-                    if d * d > 2.0 * eta * best.0 {
-                        let dec = decrease(d, eta, tmax);
-                        if dec > best.0 {
-                            best = (dec, i0, pos);
+        for start in (0..m).step_by(BLOCK) {
+            let end = (start + BLOCK).min(m);
+            // branch-free, division-free filter: the decrease is at most `d²/(2 eta)` and at most
+            // `d tmax` (bounded steps only); skip blocks without a candidate that could beat `best`
+            let mut any = false;
+            for k in start..end {
+                let (ru, gv) = (room_up[k], g[k]);
+                let d = gi0 - gv;
+                let eta = ci + cdiag[k] - two_inv_lambda * row_i[k];
+                let eta = if eta > TAU { eta } else { TAU };
+                let tmax = if room_i < ru { room_i } else { ru };
+                any |= (ru > 0.0)
+                    & (d > 0.0)
+                    & (d * d > 2.0 * eta * best.0)
+                    & (unbounded | (d * tmax > best.0));
+                if two_sided {
+                    let (rd, d) = (room_down[k], gv - gj1);
+                    let eta = cdiag[k] + cj - two_inv_lambda * row_j[k];
+                    let eta = if eta > TAU { eta } else { TAU };
+                    let tmax = if rd < room_j { rd } else { room_j };
+                    any |= (rd > 0.0)
+                        & (d > 0.0)
+                        & (d * d > 2.0 * eta * best.0)
+                        & (unbounded | (d * tmax > best.0));
+                }
+            }
+            if !any {
+                continue;
+            }
+            for pos in start..end {
+                let a = alpha[pos];
+                let gv = g[pos];
+                // partner j = pos for fixed i0
+                if a < hi[pos] && gi0 > gv {
+                    let cross = constrained && sign[pos] > sign[i0];
+                    if !(block_up && cross) {
+                        let eta = (ci + cdiag[pos] - two_inv_lambda * row_i[pos]).max(TAU);
+                        let mut tmax = room_i.min(hi[pos] - a);
+                        if cross {
+                            tmax = tmax.min(half_slack);
+                        }
+                        let d = gi0 - gv;
+                        // `d²/(2 eta)` bounds the decrease from above: skip the division
+                        if d * d > 2.0 * eta * best.0 {
+                            let dec = decrease(d, eta, tmax);
+                            if dec > best.0 {
+                                best = (dec, i0, pos);
+                            }
                         }
                     }
                 }
-            }
-            // partner i = pos for fixed j1
-            if two_sided && a > lo[pos] && gv > gj1 {
-                let cross = constrained && sign[j1] > sign[pos];
-                if !(block_up && cross) {
-                    let eta = (cdiag[pos] + cj - two_inv_lambda * row_j[pos]).max(TAU);
-                    let mut tmax = (a - lo[pos]).min(room_j);
-                    if cross {
-                        tmax = tmax.min(half_slack);
-                    }
-                    let d = gv - gj1;
-                    if d * d > 2.0 * eta * best.0 {
-                        let dec = decrease(d, eta, tmax);
-                        if dec > best.0 {
-                            best = (dec, pos, j1);
+                // partner i = pos for fixed j1
+                if two_sided && a > lo[pos] && gv > gj1 {
+                    let cross = constrained && sign[j1] > sign[pos];
+                    if !(block_up && cross) {
+                        let eta = (cdiag[pos] + cj - two_inv_lambda * row_j[pos]).max(TAU);
+                        let mut tmax = (a - lo[pos]).min(room_j);
+                        if cross {
+                            tmax = tmax.min(half_slack);
+                        }
+                        let d = gv - gj1;
+                        if d * d > 2.0 * eta * best.0 {
+                            let dec = decrease(d, eta, tmax);
+                            if dec > best.0 {
+                                best = (dec, pos, j1);
+                            }
                         }
                     }
                 }
@@ -458,6 +555,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
     }
 
     /// Exact minimisation along `e_j - e_i` for active positions `i`, `j`.
+    #[inline(never)]
     fn update(&mut self, i: usize, j: usize) {
         let si = self.cache.ensure(self.kernel, self.kidx[i]);
         let sj = self.cache.ensure(self.kernel, self.kidx[j]);
@@ -498,6 +596,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         self.g[i] += self.q[i] * (self.alpha[i] - old_i);
         self.g[j] += self.q[j] * (self.alpha[j] - old_j);
         // fused pass: kernel part of the gradient and its extremal values
+        self.set_rooms(i);
+        self.set_rooms(j);
         let tl = t * self.inv_lambda;
         let m = self.n_active;
         let (ri, rj) = (&self.cache.row(si)[..m], &self.cache.row(sj)[..m]);
@@ -507,18 +607,24 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             &self.hi[..m],
             &self.sign[..m],
         );
-        for ((g, &kj), &ki) in self.g[..m].iter_mut().zip(rj).zip(ri) {
-            *g += tl * (kj - ki);
-        }
         let mut ex = Extremes::new();
         if self.constrained {
+            for ((g, &kj), &ki) in self.g[..m].iter_mut().zip(rj).zip(ri) {
+                *g += tl * (kj - ki);
+            }
             for pos in 0..m {
                 let grp = usize::from(sign[pos] < 0.0);
-                ex.visit(pos, grp, alpha[pos], lo[pos], hi[pos], self.g[pos]);
+                ex.visit_lite(pos, grp, alpha[pos], lo[pos], hi[pos], self.g[pos]);
             }
         } else {
-            for pos in 0..m {
-                ex.visit(pos, 0, alpha[pos], lo[pos], hi[pos], self.g[pos]);
+            let (rd, ru) = (&self.room_down[..m], &self.room_up[..m]);
+            for start in (0..m).step_by(BLOCK) {
+                let end = (start + BLOCK).min(m);
+                let g = &mut self.g[start..end];
+                for ((g, &kj), &ki) in g.iter_mut().zip(&rj[start..end]).zip(&ri[start..end]) {
+                    *g += tl * (kj - ki);
+                }
+                ex.visit_block(start, g, &rd[start..end], &ru[start..end]);
             }
         }
         self.pending = Some(ex);
@@ -590,6 +696,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             &mut self.sign,
             &mut self.cdiag,
             &mut self.alpha,
+            &mut self.room_down,
+            &mut self.room_up,
             &mut self.g,
         ] {
             permute(v, &order, &mut fs);
@@ -690,7 +798,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             }
             if opt.shrinking && steps > 0 && steps % shrinking_period == 0 {
                 let before = self.n_active;
-                self.shrink(&ex);
+                let full = self.scan();
+                self.shrink(&full);
                 if self.n_active < before {
                     steps += 1;
                     continue;
