@@ -243,3 +243,26 @@ def test_bound_aware_rho_and_validation():
         smo_solver.solve_classification(x, y, 0.1, stopping="bound_aware", max_asum=5.0)
     # the default criterion still supports the constraint
     assert smo_solver.solve_classification(x, y, 0.1, max_asum=5.0).converged
+
+
+def test_shrinking_parameters_and_counters():
+    x, y, _ = make_data(300, seed=6)
+    kw = dict(gamma=0.5, tol=1e-6, shrinking_period=20)
+    res = smo_solver.solve_classification(x, y, 0.05, **kw)
+    assert res.shrinks > 0 and res.min_active < 300 and res.unshrinks <= res.shrinks + 1
+    off = smo_solver.solve_classification(x, y, 0.05, shrinking=False, **kw)
+    assert (off.shrinks, off.unshrinks, off.min_active) == (0, 0, 300)
+    for opts in (
+        {"shrinking_factor": 0.01},
+        {"shrinking_exponent": 0.25},
+        {"shrinking_exponent": 1.0},
+    ):
+        r = smo_solver.solve_classification(x, y, 0.05, **opts, **kw)
+        assert abs(r.dual_objective - off.dual_objective) < 1e-8
+    for bad in (
+        {"shrinking_exponent": 0.0},
+        {"shrinking_exponent": 1.5},
+        {"shrinking_factor": 0.0},
+    ):
+        with pytest.raises(ValueError, match="shrinking"):
+            smo_solver.solve_classification(x, y, 0.05, **bad)

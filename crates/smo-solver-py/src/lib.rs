@@ -31,6 +31,9 @@ struct SmoResult {
     primal_objective: f64,
     gap: f64,
     n_active: usize,
+    shrinks: u64,
+    unshrinks: u64,
+    min_active: usize,
     cache_hits: u64,
     cache_misses: u64,
     lam: f64,
@@ -200,6 +203,9 @@ fn solve_problem(
         primal_objective: res.primal_objective,
         gap: res.gap,
         n_active: res.n_active,
+        shrinks: res.shrinks,
+        unshrinks: res.unshrinks,
+        min_active: res.min_active,
         cache_hits: res.cache_hits,
         cache_misses: res.cache_misses,
         lam: problem.lambda,
@@ -228,7 +234,7 @@ fn slice<'a>(a: &'a PyReadonlyArray1<'_, f64>, name: &str) -> PyResult<&'a [f64]
 
 macro_rules! run_args {
     ($tol:expr, $max_steps:expr, $time_limit:expr, $working_set:expr, $two_sided:expr, $stopping:expr, $rho:expr, $shrinking:expr,
-     $shrinking_period:expr, $cache_size_mb:expr, $callback_period:expr, $alpha0:expr, $callback:expr) => {
+     $shrinking_period:expr, $shrinking_exponent:expr, $shrinking_factor:expr, $cache_size_mb:expr, $callback_period:expr, $alpha0:expr, $callback:expr) => {
         Run {
             options: SmoOptions {
                 tol: $tol,
@@ -240,9 +246,10 @@ macro_rules! run_args {
                 rho: $rho.unwrap_or(0.0),
                 shrinking: $shrinking,
                 shrinking_period: $shrinking_period,
+                shrinking_exponent: $shrinking_exponent,
+                shrinking_factor: $shrinking_factor,
                 cache_size_mb: $cache_size_mb,
                 callback_period: $callback_period,
-                ..SmoOptions::default()
             },
             alpha0: $alpha0,
             callback: $callback,
@@ -256,7 +263,7 @@ macro_rules! run_args {
 #[pyo3(signature = (
     x, y, lam, *, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None, shift=1.0,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=0.5, shrinking_factor=1.0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -282,6 +289,8 @@ fn solve_classification(
     rho: Option<f64>,
     shrinking: bool,
     shrinking_period: u64,
+    shrinking_exponent: f64,
+    shrinking_factor: f64,
     cache_size_mb: f64,
     alpha0: Option<PyReadonlyArray1<'_, f64>>,
     callback: Option<Py<PyAny>>,
@@ -303,6 +312,8 @@ fn solve_classification(
         rho,
         shrinking,
         shrinking_period,
+        shrinking_exponent,
+        shrinking_factor,
         cache_size_mb,
         callback_period,
         alpha0,
@@ -317,7 +328,7 @@ fn solve_classification(
 #[pyo3(signature = (
     x, y, lam, *, epsilon=0.1, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=0.5, shrinking_factor=1.0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -343,6 +354,8 @@ fn solve_regression(
     rho: Option<f64>,
     shrinking: bool,
     shrinking_period: u64,
+    shrinking_exponent: f64,
+    shrinking_factor: f64,
     cache_size_mb: f64,
     alpha0: Option<PyReadonlyArray1<'_, f64>>,
     callback: Option<Py<PyAny>>,
@@ -364,6 +377,8 @@ fn solve_regression(
         rho,
         shrinking,
         shrinking_period,
+        shrinking_exponent,
+        shrinking_factor,
         cache_size_mb,
         callback_period,
         alpha0,
@@ -418,6 +433,8 @@ fn solve_least_squares(
         rho,
         false,
         0,
+        0.5,
+        1.0,
         cache_size_mb,
         callback_period,
         alpha0,
@@ -435,7 +452,7 @@ fn solve_least_squares(
 #[pyo3(signature = (
     x, lam, q, p, lo, hi, *, kernel_index=None, sign=None, max_asum=None, kernel="rbf",
     gamma=1.0, coef0=0.0, degree=3, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, cache_size_mb=256.0,
+    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=0.5, shrinking_factor=1.0, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -463,6 +480,8 @@ fn solve_dual(
     rho: Option<f64>,
     shrinking: bool,
     shrinking_period: u64,
+    shrinking_exponent: f64,
+    shrinking_factor: f64,
     cache_size_mb: f64,
     alpha0: Option<PyReadonlyArray1<'_, f64>>,
     callback: Option<Py<PyAny>>,
@@ -494,6 +513,8 @@ fn solve_dual(
         rho,
         shrinking,
         shrinking_period,
+        shrinking_exponent,
+        shrinking_factor,
         cache_size_mb,
         callback_period,
         alpha0,

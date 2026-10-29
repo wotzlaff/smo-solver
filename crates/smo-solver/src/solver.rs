@@ -162,6 +162,13 @@ pub struct SmoResult {
     pub gap: f64,
     /// Size of the active set when the main loop ended.
     pub n_active: usize,
+    /// Number of shrinking steps that removed variables from the active set.
+    pub shrinks: u64,
+    /// Number of times the full problem had to be restored before termination because the
+    /// tolerance was reached on the shrunk problem only (the gradient is recomputed each time).
+    pub unshrinks: u64,
+    /// Smallest size of the active set during the run.
+    pub min_active: usize,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
@@ -301,6 +308,9 @@ struct Smo<'a, K: Kernel + ?Sized> {
     /// Extremal gradients computed by the last [`Smo::update`].
     pending: Option<Extremes>,
     n_active: usize,
+    shrinks: u64,
+    unshrinks: u64,
+    min_active: usize,
     cache: RowCache,
     inv_lambda: f64,
     constrained: bool,
@@ -330,6 +340,18 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             return Err(ProblemError::InvalidParameter {
                 what: "rho",
                 value: opt.rho,
+            });
+        }
+        if !(opt.shrinking_factor > 0.0 && opt.shrinking_factor.is_finite()) {
+            return Err(ProblemError::InvalidParameter {
+                what: "shrinking_factor",
+                value: opt.shrinking_factor,
+            });
+        }
+        if !(opt.shrinking_exponent > 0.0 && opt.shrinking_exponent <= 1.0) {
+            return Err(ProblemError::InvalidParameter {
+                what: "shrinking_exponent (must be in (0, 1])",
+                value: opt.shrinking_exponent,
             });
         }
         if opt.stopping == StoppingCriterion::BoundAware {
@@ -362,6 +384,9 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             g: prob.p.clone(),
             pending: None,
             n_active: n,
+            shrinks: 0,
+            unshrinks: 0,
+            min_active: n,
             cache: RowCache::new(kernel.len(), prob.kernel_index.clone(), capacity),
             inv_lambda,
             constrained: prob.max_asum.is_some(),
@@ -733,6 +758,8 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         permute(&mut self.perm, &order, &mut us);
         permute(&mut self.kidx, &order, &mut us);
         self.n_active = n_keep;
+        self.shrinks += 1;
+        self.min_active = self.min_active.min(n_keep);
         self.cache.restrict(&keep);
     }
 
@@ -840,6 +867,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                     && self.bound_aware_measure() <= opt.tol);
             if converged {
                 if self.n_active < n {
+                    self.unshrinks += 1;
                     self.unshrink();
                     continue;
                 }
@@ -894,6 +922,9 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             primal_objective: primal,
             gap: primal + dual,
             n_active,
+            shrinks: self.shrinks,
+            unshrinks: self.unshrinks,
+            min_active: self.min_active,
             cache_hits: self.cache.hits,
             cache_misses: self.cache.misses,
         }

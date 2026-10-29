@@ -480,3 +480,47 @@ mod bound_aware_stopping {
         assert!(solve(&kernel, &constrained, &plain).is_ok());
     }
 }
+
+#[test]
+fn shrinking_counters_and_parameter_validation() {
+    let (x, y, _) = dataset(300, 3, 21);
+    let kernel = FeatureKernel::new(&x, 3, KernelFunction::Rbf { gamma: 0.8 });
+    let problem = DualProblem::classification(&y, 0.05, None, 1.0, 0.0, None).unwrap();
+    let on = SmoOptions {
+        tol: 1e-6,
+        shrinking_period: 20,
+        ..SmoOptions::default()
+    };
+    let res = solve(&kernel, &problem, &on).unwrap();
+    assert!(res.shrinks > 0, "shrinking should remove variables");
+    assert!(res.min_active < problem.len());
+    assert!(res.unshrinks <= res.shrinks + 1);
+    let off = SmoOptions {
+        shrinking: false,
+        ..on.clone()
+    };
+    let plain = solve(&kernel, &problem, &off).unwrap();
+    assert_eq!((plain.shrinks, plain.unshrinks), (0, 0));
+    assert_eq!(plain.min_active, problem.len());
+    // shrinking must not change the solution
+    assert!((res.dual_objective - plain.dual_objective).abs() < 1e-8);
+    // parameters of the threshold rule `factor * r^exponent`
+    for (exponent, factor) in [(0.0, 1.0), (1.5, 1.0), (0.5, 0.0), (0.5, -2.0)] {
+        let opt = SmoOptions {
+            shrinking_exponent: exponent,
+            shrinking_factor: factor,
+            ..on.clone()
+        };
+        assert!(
+            solve(&kernel, &problem, &opt).is_err(),
+            "{exponent} {factor}"
+        );
+    }
+    let aggressive = SmoOptions {
+        shrinking_factor: 0.01,
+        shrinking_exponent: 0.25,
+        ..on
+    };
+    let res = solve(&kernel, &problem, &aggressive).unwrap();
+    assert!((res.dual_objective - plain.dual_objective).abs() < 1e-8);
+}

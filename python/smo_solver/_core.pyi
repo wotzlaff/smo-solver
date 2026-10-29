@@ -29,6 +29,9 @@ class SmoResult:
     primal_objective: float
     gap: float
     n_active: int
+    shrinks: int
+    unshrinks: int
+    min_active: int
     cache_hits: int
     cache_misses: int
     lam: float
@@ -57,6 +60,8 @@ def solve_classification(
     rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
+    shrinking_exponent: float = 0.5,
+    shrinking_factor: float = 1.0,
     cache_size_mb: float = 256.0,
     alpha0: Array1 | None = None,
     callback: Callback | None = None,
@@ -84,6 +89,8 @@ def solve_regression(
     rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
+    shrinking_exponent: float = 0.5,
+    shrinking_factor: float = 1.0,
     cache_size_mb: float = 256.0,
     alpha0: Array1 | None = None,
     callback: Callback | None = None,
@@ -135,6 +142,8 @@ def solve_dual(
     rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
+    shrinking_exponent: float = 0.5,
+    shrinking_factor: float = 1.0,
     cache_size_mb: float = 256.0,
     alpha0: Array1 | None = None,
     callback: Callback | None = None,
