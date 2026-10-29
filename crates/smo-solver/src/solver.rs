@@ -9,7 +9,8 @@
 //! `r(α) = max_{i ∈ I_down} g_i - min_{j ∈ I_up} g_j` (Strasdat, Sec. 7.2/7.3); `α` is optimal
 //! iff `r(α) ≤ 0`. While the 1-norm constraint is active, pairs that would increase
 //! `Σ s_i α_i` are excluded. The solver stops once `r(α) ≤ tol`. The scaling of `r` matches
-//! the gradient used by LIBSVM, hence `tol = 1e-3` is a reasonable default.
+//! the gradient used by LIBSVM, hence `tol = 1e-3` is a reasonable default. Optionally the
+//! bound-aware measure `r◇(α, ρ) / ρ` (Sec. 7.6) can be used as well, see [`StoppingCriterion`].
 //!
 //! *Working set selection* (Strasdat, Sec. 7.7): maximal violating pair, maximal unbounded
 //! decrease pair (second-order rule of Fan, Chen & Lin) or maximal decrease pair, which also
@@ -23,6 +24,7 @@ use crate::clock::Instant;
 
 use crate::cache::RowCache;
 use crate::kernel::Kernel;
+use crate::measures;
 use crate::problem::{DualProblem, ProblemError};
 use crate::simd::{self, Block, Candidates};
 
@@ -41,11 +43,33 @@ pub enum WorkingSetSelection {
     MaximalDecrease,
 }
 
+/// Stopping criterion of the solver.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StoppingCriterion {
+    /// Stop as soon as the violation measure `r(α)` is at most `tol`.
+    #[default]
+    Violation,
+    /// Stop as soon as `r(α) ≤ tol` or the bound-aware violation measure of Strasdat, Def. 7.21,
+    /// normalised by `ρ`, is at most `tol`: `r◇(α, ρ) / ρ ≤ tol`.
+    ///
+    /// Since `min(ε_ij, ρ) ≤ ρ` one always has `r◇(α, ρ) / ρ ≤ r(α)`, so this criterion stops
+    /// no later than [`StoppingCriterion::Violation`]; it ignores violating pairs that can only
+    /// move a tiny distance because one of their variables is almost at its bound. The measure
+    /// costs `O(m log m)` and is evaluated every `shrinking_period` steps (`min(n, 1000)` by default). Not available together
+    /// with the 1-norm constraint.
+    BoundAware,
+}
+
 /// Options of the SMO solver.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SmoOptions {
-    /// Stop as soon as the violation measure is at most `tol`.
+    /// Stop as soon as the stopping measure (see `stopping`) is at most `tol`.
     pub tol: f64,
+    /// Stopping criterion.
+    pub stopping: StoppingCriterion,
+    /// Step size bound `ρ` of the bound-aware measure (`0`: `λ`, the value used in the
+    /// computational study of the thesis, Sec. 10.2.2).
+    pub rho: f64,
     /// Maximal number of SMO steps.
     pub max_steps: u64,
     /// Wall-clock time limit in seconds.
@@ -73,6 +97,8 @@ impl Default for SmoOptions {
     fn default() -> Self {
         Self {
             tol: 1e-3,
+            stopping: StoppingCriterion::default(),
+            rho: 0.0,
             max_steps: 100_000_000,
             time_limit: None,
             working_set: WorkingSetSelection::default(),
@@ -300,6 +326,20 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         alpha0: Option<&[f64]>,
     ) -> Result<Self, ProblemError> {
         let n = prob.len();
+        if !(opt.rho >= 0.0 && opt.rho.is_finite()) {
+            return Err(ProblemError::InvalidParameter {
+                what: "rho",
+                value: opt.rho,
+            });
+        }
+        if opt.stopping == StoppingCriterion::BoundAware {
+            if let Some(a) = prob.max_asum {
+                return Err(ProblemError::InvalidParameter {
+                    what: "max_asum (not supported with the bound-aware stopping criterion)",
+                    value: a,
+                });
+            }
+        }
         let inv_lambda = 1.0 / prob.lambda;
         let capacity = RowCache::capacity_for(opt.cache_size_mb, n);
         let mut smo = Self {
@@ -738,6 +778,24 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         out
     }
 
+    /// `r◇(α, ρ) / ρ` on the active set (see [`StoppingCriterion::BoundAware`]).
+    fn bound_aware_measure(&self) -> f64 {
+        let rho = if self.opt.rho > 0.0 {
+            self.opt.rho
+        } else {
+            self.prob.lambda
+        };
+        let m = self.n_active;
+        let r = measures::bound_aware_violation_slices(
+            &self.alpha[..m],
+            &self.lo[..m],
+            &self.hi[..m],
+            &self.g[..m],
+            rho,
+        );
+        r / rho
+    }
+
     fn run<F: FnMut(&Progress) -> bool>(&mut self, mut callback: F) -> SmoResult {
         let n = self.prob.len();
         let opt = self.opt;
@@ -775,7 +833,12 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             };
             let (violation, i0, j1) = self.maximal_violating_pair(&ex);
             self.violation = violation.max(0.0);
-            if violation <= opt.tol {
+            let converged = violation <= opt.tol
+                || (opt.stopping == StoppingCriterion::BoundAware
+                    && steps > 0
+                    && steps % shrinking_period == 0
+                    && self.bound_aware_measure() <= opt.tol);
+            if converged {
                 if self.n_active < n {
                     self.unshrink();
                     continue;

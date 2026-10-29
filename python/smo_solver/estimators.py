@@ -18,7 +18,15 @@ from .kernels import kernel_matrix
 class _BaseSmo(BaseEstimator):
     """Shared logic: kernel parameters, solver options and the kernel expansion."""
 
-    _solver_options = ("tol", "max_steps", "time_limit", "working_set", "cache_size_mb")
+    _solver_options = (
+        "tol",
+        "max_steps",
+        "time_limit",
+        "working_set",
+        "stopping",
+        "rho",
+        "cache_size_mb",
+    )
 
     def _gamma(self, x: NDArray[np.float64]) -> float:
         if self.gamma == "scale":
@@ -109,7 +117,7 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         Bound on ``sum |alpha_i|`` (generalised nu-SVM).
     class_weight : dict or "balanced", optional
         Weights per class, multiplied with ``sample_weight``.
-    tol, max_steps, time_limit, working_set, cache_size_mb
+    tol, max_steps, time_limit, working_set, stopping, rho, cache_size_mb
         Solver options, see :func:`smo_solver.solve_classification`.
     """
 
@@ -129,6 +137,8 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        stopping: str = "violation",
+        rho: float | None = None,
         cache_size_mb: float = 256.0,
     ) -> None:
         self.lam = lam
@@ -144,6 +154,8 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.stopping = stopping
+        self.rho = rho
         self.cache_size_mb = cache_size_mb
 
     def fit(self, X: ArrayLike, y: ArrayLike, sample_weight: ArrayLike | None = None) -> SmoSVC:
@@ -213,6 +225,8 @@ class SmoSVR(RegressorMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        stopping: str = "violation",
+        rho: float | None = None,
         cache_size_mb: float = 256.0,
     ) -> None:
         self.lam = lam
@@ -227,6 +241,8 @@ class SmoSVR(RegressorMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.stopping = stopping
+        self.rho = rho
         self.cache_size_mb = cache_size_mb
 
     def fit(self, X: ArrayLike, y: ArrayLike, sample_weight: ArrayLike | None = None) -> SmoSVR:
@@ -270,6 +286,8 @@ class SmoLSSVR(RegressorMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        stopping: str = "violation",
+        rho: float | None = None,
         cache_size_mb: float = 256.0,
     ) -> None:
         self.lam = lam
@@ -281,6 +299,8 @@ class SmoLSSVR(RegressorMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.stopping = stopping
+        self.rho = rho
         self.cache_size_mb = cache_size_mb
 
     def fit(self, X: ArrayLike, y: ArrayLike, sample_weight: ArrayLike | None = None) -> SmoLSSVR:

@@ -184,3 +184,62 @@ def test_input_validation():
         smo_solver.solve_classification(x, y, 1.0, working_set="foo")
     with pytest.raises(ValueError, match="contiguous"):
         smo_solver.solve_classification(np.asfortranarray(x), y, 1.0)
+
+
+def bound_aware_measure(alpha, g, lo, hi, rho):
+    """Brute-force ``r(alpha, rho) / rho`` of Strasdat, Def. 7.21 (O(n^2))."""
+    up = np.minimum(hi - alpha, rho)  # possible increase of variable i
+    down = np.minimum(alpha - lo, rho)  # possible decrease of variable j
+    step = np.minimum(up[:, None], down[None, :])
+    return float(np.max(step * (g[None, :] - g[:, None]), initial=0.0)) / rho
+
+
+@pytest.mark.parametrize("lam", [0.1, 0.01])
+def test_bound_aware_stopping_criterion(lam):
+    x, y, _ = make_data(300, seed=4)
+    kw = dict(gamma=0.5, tol=1e-3, shrinking_period=50)
+    plain = smo_solver.solve_classification(x, y, lam, **kw)
+    aware = smo_solver.solve_classification(x, y, lam, stopping="bound_aware", **kw)
+    assert aware.converged
+    assert aware.steps <= plain.steps
+    # independent check of the criterion; hinge loss: g = ka - y, bounds [min(0, y), max(0, y)]
+    g = aware.ka - y
+    measure = bound_aware_measure(aware.alpha, g, np.minimum(0.0, y), np.maximum(0.0, y), lam)
+    assert measure <= 1e-3 * (1 + 1e-6)
+    # the bound-aware measure never exceeds the violation
+    assert measure <= aware.violation + 1e-12
+    # stopping early costs little accuracy
+    tight = smo_solver.solve_classification(x, y, lam, gamma=0.5, tol=1e-8)
+    assert abs(aware.dual_objective - tight.dual_objective) < 1e-4 * abs(tight.dual_objective)
+
+
+def test_bound_aware_stopping_for_all_problem_types():
+    x, y, t = make_data(200, seed=5)
+    calls = {
+        "regression": lambda **k: smo_solver.solve_regression(
+            x, t, 0.05, epsilon=0.1, shrinking_period=50, **k
+        ),
+        "smoothed": lambda **k: smo_solver.solve_classification(
+            x, y, 0.05, smoothing=0.2, shrinking_period=50, **k
+        ),
+        "least_squares": lambda **k: smo_solver.solve_least_squares(x, t, 0.05, **k),
+    }
+    for name, call in calls.items():
+        plain = call(gamma=0.5)
+        aware = call(gamma=0.5, stopping="bound_aware")
+        assert aware.converged, name
+        assert aware.steps <= plain.steps, name
+
+
+def test_bound_aware_rho_and_validation():
+    x, y, _ = make_data(100)
+    res = smo_solver.solve_classification(x, y, 0.1, stopping="bound_aware", rho=0.5)
+    assert res.converged
+    with pytest.raises(ValueError, match="stopping"):
+        smo_solver.solve_classification(x, y, 0.1, stopping="nope")
+    with pytest.raises(ValueError, match="rho"):
+        smo_solver.solve_classification(x, y, 0.1, stopping="bound_aware", rho=-1.0)
+    with pytest.raises(ValueError, match="max_asum"):
+        smo_solver.solve_classification(x, y, 0.1, stopping="bound_aware", max_asum=5.0)
+    # the default criterion still supports the constraint
+    assert smo_solver.solve_classification(x, y, 0.1, max_asum=5.0).converged

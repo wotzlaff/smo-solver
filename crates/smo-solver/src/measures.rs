@@ -37,16 +37,26 @@ pub fn violation(problem: &DualProblem, alpha: &[f64], grad: &[f64]) -> f64 {
 /// `α_j` can decrease, with the maximal feasible step `ε_ij = min(hi_i - α_i, α_j - lo_j)`.
 /// Computed in `O(n log n)` as described in Remark 7.22. The optional 1-norm constraint is ignored.
 pub fn bound_aware_violation(problem: &DualProblem, alpha: &[f64], grad: &[f64], rho: f64) -> f64 {
-    let n = problem.len();
+    bound_aware_violation_slices(alpha, &problem.lo, &problem.hi, grad, rho)
+}
+
+/// [`bound_aware_violation`] for explicit bounds (e.g. the active prefix of the solver's arrays).
+pub fn bound_aware_violation_slices(
+    alpha: &[f64],
+    lo: &[f64],
+    hi: &[f64],
+    grad: &[f64],
+    rho: f64,
+) -> f64 {
     // candidates to increase: (δ⁺_i, -g_i); candidates to decrease: (δ⁻_j, g_j)
     let mut inc: Vec<(f64, f64)> = Vec::new();
     let mut dec: Vec<(f64, f64)> = Vec::new();
-    for i in 0..n {
-        let up = (problem.hi[i] - alpha[i]).min(rho);
+    for i in 0..alpha.len() {
+        let up = (hi[i] - alpha[i]).min(rho);
         if up > 0.0 {
             inc.push((up, -grad[i]));
         }
-        let down = (alpha[i] - problem.lo[i]).min(rho);
+        let down = (alpha[i] - lo[i]).min(rho);
         if down > 0.0 {
             dec.push((down, grad[i]));
         }

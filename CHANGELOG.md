@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Bound-aware stopping criterion (`stopping="bound_aware"`, `rho`; thesis Def. 7.21): stops when
+  `r◇(α, ρ)/ρ ≤ tol`, evaluated in `O(n log n)` every `shrinking_period` steps. Available in the Rust
+  crate (`StoppingCriterion`, `SmoOptions::{stopping, rho}`), the Python functions and the estimators.
+  Not available together with `max_asum`; the default criterion is unchanged.
+
 ## 0.1.1 – 2026-10-29
 
 ### Changed

@@ -363,3 +363,120 @@ proptest! {
         assert_optimal(&problem, &res, 1e-5 * scale);
     }
 }
+
+mod bound_aware_stopping {
+    use super::*;
+    use smo_solver::measures::bound_aware_violation;
+
+    fn options(stopping: StoppingCriterion, tol: f64) -> SmoOptions {
+        SmoOptions {
+            tol,
+            stopping,
+            shrinking_period: 50,
+            ..SmoOptions::default()
+        }
+    }
+
+    /// `r◇(α, ρ) / ρ` and `r(α)` of a result, computed from scratch.
+    fn measures_of(problem: &DualProblem, res: &SmoResult, rho: f64) -> (f64, f64) {
+        let g = dual_gradient(problem, &res.alpha, &res.ka);
+        (
+            bound_aware_violation(problem, &res.alpha, &g, rho) / rho,
+            violation(problem, &res.alpha, &g),
+        )
+    }
+
+    #[test]
+    fn stops_with_small_bound_aware_measure() {
+        let (x, y, t) = dataset(400, 3, 11);
+        let kernel = FeatureKernel::new(&x, 3, KernelFunction::Rbf { gamma: 0.5 });
+        let lam = 0.01;
+        let problems = [
+            DualProblem::classification(&y, lam, None, 1.0, 0.1, None).unwrap(),
+            DualProblem::regression(&t, lam, None, 0.1, 0.05, None).unwrap(),
+        ];
+        for problem in &problems {
+            let tol = 1e-3;
+            let plain = solve(
+                &kernel,
+                problem,
+                &options(StoppingCriterion::Violation, tol),
+            );
+            let plain = plain.unwrap();
+            let aware = solve(
+                &kernel,
+                problem,
+                &options(StoppingCriterion::BoundAware, tol),
+            );
+            let aware = aware.unwrap();
+            assert_eq!(aware.status, Status::Converged);
+            let (ba, _) = measures_of(problem, &aware, lam);
+            assert!(ba <= tol * (1.0 + 1e-6), "r◇/ρ = {ba} > {tol}");
+            assert!(
+                aware.steps <= plain.steps,
+                "{} > {}",
+                aware.steps,
+                plain.steps
+            );
+            // the early stop must not cost much accuracy
+            let tight = solve(&kernel, problem, &tight()).unwrap();
+            let rel = (aware.dual_objective - tight.dual_objective).abs()
+                / tight.dual_objective.abs().max(1.0);
+            assert!(rel < 1e-4, "objective differs by {rel}");
+        }
+    }
+
+    #[test]
+    fn is_a_lower_bound_of_the_violation() {
+        // r◇(α, ρ) / ρ ≤ r(α) for every ρ > 0 (Strasdat, Lemma 7.26 and min(ε, ρ) ≤ ρ)
+        let (x, y, _) = dataset(150, 2, 5);
+        let kernel = FeatureKernel::new(&x, 2, KernelFunction::Rbf { gamma: 1.0 });
+        let problem = DualProblem::classification(&y, 0.05, None, 1.0, 0.0, None).unwrap();
+        for tol in [1.0, 1e-1, 1e-2, 1e-4] {
+            let res = solve(
+                &kernel,
+                &problem,
+                &options(StoppingCriterion::Violation, tol),
+            );
+            let res = res.unwrap();
+            for rho in [1e-3, 0.05, 1.0, 100.0] {
+                let (ba, r) = measures_of(&problem, &res, rho);
+                assert!(ba <= r + 1e-12, "rho {rho}: {ba} > {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_rho_is_respected() {
+        let (x, y, _) = dataset(300, 2, 2);
+        let kernel = FeatureKernel::new(&x, 2, KernelFunction::Rbf { gamma: 1.0 });
+        let lam = 0.02;
+        let problem = DualProblem::classification(&y, lam, None, 1.0, 0.0, None).unwrap();
+        for rho in [0.001, 0.1, 5.0] {
+            let opt = SmoOptions {
+                rho,
+                ..options(StoppingCriterion::BoundAware, 1e-3)
+            };
+            let res = solve(&kernel, &problem, &opt).unwrap();
+            assert_eq!(res.status, Status::Converged);
+            let (ba, _) = measures_of(&problem, &res, rho);
+            assert!(ba <= 1e-3 * (1.0 + 1e-6), "rho {rho}: {ba}");
+        }
+    }
+
+    #[test]
+    fn rejects_one_norm_constraint_and_negative_rho() {
+        let (x, y, _) = dataset(50, 2, 1);
+        let kernel = FeatureKernel::new(&x, 2, KernelFunction::Rbf { gamma: 1.0 });
+        let constrained =
+            DualProblem::classification(&y, 0.05, None, 1.0, 0.1, Some(10.0)).unwrap();
+        let opt = options(StoppingCriterion::BoundAware, 1e-3);
+        assert!(solve(&kernel, &constrained, &opt).is_err());
+        let problem = DualProblem::classification(&y, 0.05, None, 1.0, 0.1, None).unwrap();
+        let negative = SmoOptions { rho: -1.0, ..opt };
+        assert!(solve(&kernel, &problem, &negative).is_err());
+        // the default criterion is unaffected by the 1-norm constraint
+        let plain = options(StoppingCriterion::Violation, 1e-3);
+        assert!(solve(&kernel, &constrained, &plain).is_ok());
+    }
+}

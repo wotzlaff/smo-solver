@@ -34,4 +34,7 @@ pub mod solver;
 pub use kernel::{FeatureKernel, Kernel, KernelFunction, PrecomputedKernel};
 pub use model::Model;
 pub use problem::{smooth_max, DualProblem, ProblemError};
-pub use solver::{solve, solve_with, Progress, SmoOptions, SmoResult, Status, WorkingSetSelection};
+pub use solver::{
+    solve, solve_with, Progress, SmoOptions, SmoResult, Status, StoppingCriterion,
+    WorkingSetSelection,
+};

@@ -102,6 +102,27 @@ loss is quadratic on an interval. The decision function is `f(x) = 1/λ Σ_k β_
 uses the same scaling as LIBSVM; with `δ = 0` and `λ = 1/C` the solutions coincide with
 `sklearn.svm.SVC`/`SVR`.
 
+### Stopping criterion
+
+By default the solver stops when the violation measure `r(α) = max_{α_i > lo_i} g_i − min_{α_j < hi_j} g_j`
+drops below `tol`. With `stopping="bound_aware"` it also stops when the bound-aware violation measure of
+the thesis (Def. 7.21), normalized by `ρ`, is below `tol`:
+
+```
+r◇(α, ρ) / ρ = max_{i,j} min(ε_ij, ρ)/ρ · (g_j − g_i)  ≤  tol,   ε_ij = min(hi_i − α_i, α_j − lo_j)
+```
+
+Because `min(ε_ij, ρ) ≤ ρ` this measure never exceeds `r(α)`, so the criterion stops no later than the
+default one; it discounts violating pairs that can only move a tiny distance. It costs `O(n log n)` and is
+checked every `shrinking_period` steps. `rho` defaults to `λ` (the value used in the thesis, Sec. 10.2.2);
+the criterion is not available together with `max_asum`.
+
+In our experiments it rarely differs from the default: with `ρ = λ` the two measures agree up to
+pairs at a bound, in line with the observation `r ≈ r◇/λ` of the thesis (Sec. 10.2.2). It stops
+earlier only for ε-regression at `n = 5000` (292 000 instead of 387 707 steps at `tol = 1e-3`, with a
+duality gap of 0.32 instead of 0.08). Larger `ρ` stops earlier still, but trades accuracy for steps
+about like a larger `tol` does.
+
 ## Performance
 
 Training time against LIBSVM (`sklearn.svm.SVC`/`SVR`, same `C = 1/λ`, `γ = 0.1`, tolerance

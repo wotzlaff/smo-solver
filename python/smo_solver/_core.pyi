@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 __version__: str
 
 Kernel = Literal["rbf", "gaussian", "linear", "poly", "polynomial", "precomputed"]
+Stopping = Literal["violation", "bound_aware"]
 WorkingSet = Literal[
     "mvp", "mud", "md", "max_violating_pair", "max_unbounded_decrease", "max_decrease"
 ]
@@ -52,6 +53,8 @@ def solve_classification(
     time_limit: float | None = None,
     working_set: WorkingSet = "md",
     two_sided: bool = True,
+    stopping: Stopping = "violation",
+    rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
     cache_size_mb: float = 256.0,
@@ -77,6 +80,8 @@ def solve_regression(
     time_limit: float | None = None,
     working_set: WorkingSet = "md",
     two_sided: bool = True,
+    stopping: Stopping = "violation",
+    rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
     cache_size_mb: float = 256.0,
@@ -99,6 +104,8 @@ def solve_least_squares(
     time_limit: float | None = None,
     working_set: WorkingSet = "md",
     two_sided: bool = True,
+    stopping: Stopping = "violation",
+    rho: float | None = None,
     cache_size_mb: float = 256.0,
     alpha0: Array1 | None = None,
     callback: Callback | None = None,
@@ -124,6 +131,8 @@ def solve_dual(
     time_limit: float | None = None,
     working_set: WorkingSet = "md",
     two_sided: bool = True,
+    stopping: Stopping = "violation",
+    rho: float | None = None,
     shrinking: bool = True,
     shrinking_period: int = 0,
     cache_size_mb: float = 256.0,

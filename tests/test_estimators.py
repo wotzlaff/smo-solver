@@ -93,3 +93,21 @@ def test_invalid_parameters():
         SmoSVC(gamma=-1.0).fit(x, y)
     est = clone(SmoSVR(epsilon=0.3))
     assert est.get_params()["epsilon"] == 0.3
+
+
+def test_estimators_accept_the_bound_aware_stopping_criterion():
+    from smo_solver import SmoLSSVR, SmoSVC, SmoSVR
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(150, 3))
+    y = (x[:, 0] * x[:, 1] > 0).astype(int)
+    t = np.sin(x[:, 0]) + 0.1 * rng.normal(size=150)
+    for est, target in [(SmoSVC(lam=0.1), y), (SmoSVR(lam=0.1), t), (SmoLSSVR(lam=0.1), t)]:
+        aware = clone(est).set_params(stopping="bound_aware", rho=0.1)
+        assert aware.get_params()["stopping"] == "bound_aware"
+        pred = aware.fit(x, target).predict(x)
+        ref = est.fit(x, target).predict(x)
+        if target is y:
+            assert np.mean(pred == ref) > 0.97
+        else:
+            assert np.max(np.abs(pred - ref)) < 5e-2
