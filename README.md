@@ -120,7 +120,17 @@ default one; it discounts violating pairs that can only move a tiny distance. It
 checked every `shrinking_period` steps. `rho` defaults to `λ` (the value used in the thesis, Sec. 10.2.2);
 the criterion is not available together with `max_asum`.
 
-In our experiments it rarely differs from the default: with `ρ = λ` the two measures agree up to
+Which measure is the right one? `benchmarks/stopping_study.py` follows 12 runs (classification and
+ε-regression, with and without smoothing, three λ, n = 1500) and compares the measures of every iterate with the
+actual error against a tight solution. The violation `r` and the bound-aware `r◇/λ` are interchangeable, and both
+track the largest deviation of the decision function from the exact one almost one-to-one (80 % of the iterates
+within a factor of 0.4 to 1.5): `r < τ` means `max |f − f*| ≲ τ`, so the tolerance is the accuracy of the
+predictions. The duality gap is a poorer criterion: it grows with the number of samples, its relation to the
+decision error varies over 2.7 decades (0.6 for `r`), and a gap threshold that is safe for an accuracy of `1e-3`
+(2·10⁻⁵) is far stricter than `r < 1e-3`. The dual objective converges quadratically, so objective-based criteria
+stop much too early or too late. The default stays as it is.
+
+In our experiments the bound-aware criterion rarely differs from the default: with `ρ = λ` the two measures agree up to
 pairs at a bound, in line with the observation `r ≈ r◇/λ` of the thesis (Sec. 10.2.2). It stops
 earlier only for ε-regression at `n = 5000` (292 000 instead of 387 707 steps at `tol = 1e-3`, with a
 duality gap of 0.32 instead of 0.08). Larger `ρ` stops earlier still, but trades accuracy for steps
@@ -163,7 +173,7 @@ kernel widths, two regularization parameters, two tolerances, plus an active 1-n
 | current default | 1.56 | 0.97 |
 
 The speed-up grows with the problem size and with the requested accuracy (classification, n = 10 000: 1.6× at
-tolerance `1e-2`, 2.4× at `1e-5`). A factor below 1 removes variables too early (twice as many steps because
+tolerance `1e-2`, 2.5× at `1e-5`; ε-regression, n = 3000: 1.8–2.2×). A factor below 1 removes variables too early (twice as many steps because
 variables have to return), a larger factor shrinks too late. An attempt that would remove at most 10 % of the
 active set is skipped: with a narrow kernel almost every sample is a support vector, nothing can be shrunk and
 the restoration of the full problem used to cost up to 60 % extra time. The result reports `shrinks`,

@@ -27,9 +27,10 @@ import numpy as np
 import smo_solver
 from smo_solver import kernel_matrix
 
+N = 1500  # number of samples of the study
 FIELDS = ["task", "smoothing", "lam", "budget", "steps", "violation", "bound_aware", "gap",
           "dual_subopt", "f_err", "alpha_err"]  # fmt: skip
-MEASURES = ["violation", "bound_aware", "gap"]
+MEASURES = ["violation", "bound_aware", "gap", "gap_per_sample"]
 ERRORS = ["dual_subopt", "f_err", "alpha_err"]
 
 
@@ -42,7 +43,7 @@ def data(n: int, d: int = 10, seed: int = 0):
 
 
 def run() -> None:
-    n, gamma = 1500, 0.1
+    n, gamma = N, 0.1
     x, y, t = data(n)
     xt = data(500, seed=1)[0]
     kt = kernel_matrix(xt, x, gamma=gamma)
@@ -82,32 +83,42 @@ def summary(path: str) -> None:
     problems: dict[tuple, list[dict]] = {}
     for r in rows:
         problems.setdefault((r["task"], r["smoothing"], r["lam"]), []).append(r)
-    arr = {
-        k: {c: np.array([float(r[c]) for r in v]) for c in MEASURES + ERRORS}
-        for k, v in problems.items()
-    }
-    print("ratio error / measure over all iterates of all problems (log10: median [10 %, 90 %])\n")
-    print(f"{'measure':<12}" + "".join(f"{e:>34}" for e in ERRORS))
+    arr = {}
+    for k, v in problems.items():
+        a = {
+            c: np.array([float(r[c]) for r in v])
+            for c in ["violation", "bound_aware", "gap", *ERRORS]
+        }
+        a["gap_per_sample"] = a["gap"] / N  # the gap is a sum over the samples
+        arr[k] = a
+    print(
+        f"{len(rows)} iterates of {len(arr)} problems; log10 of error / measure: median [10 %, 90 %]\n"
+    )
+    print(f"{'measure':<16}" + "".join(f"{e:>34}" for e in ERRORS))
     for m in MEASURES:
         cells = []
         for e in ERRORS:
             ratios = np.concatenate(
-                [np.log10(np.maximum(a[e], 1e-300) / a[m]) for a in arr.values()]
+                [
+                    np.log10(np.maximum(a[e], 1e-300)[a[m] > 0] / a[m][a[m] > 0])
+                    for a in arr.values()
+                ]
             )
             lo, med, hi = np.percentile(ratios, [10, 50, 90])
             cells.append(f"{med:+6.2f} [{lo:+6.2f}, {hi:+6.2f}] (spread {hi - lo:4.2f})")
-        print(f"{m:<12}" + "".join(f"{c:>34}" for c in cells))
-    print("\nlargest tolerance (per measure) that guarantees f_err <= target on every problem\n")
+        print(f"{m:<16}" + "".join(f"{c:>34}" for c in cells))
+    print(
+        "\nlargest threshold per measure with: measure < threshold  =>  f_err <= target (all problems)\n"
+    )
     for target in (1e-1, 1e-2, 1e-3):
-        line = f"f_err <= {target:.0e}: "
+        line = f"f_err <= {target:.0e}:  "
         for m in MEASURES:
-            # for every problem: the smallest measure value among iterates that still violate the target
             worst = np.inf
             for a in arr.values():
                 bad = a["f_err"] > target
                 if bad.any():
-                    worst = min(worst, a[m][bad].min())
-            line += f"{m} < {worst:.1e}   "
+                    worst = min(worst, a[m][bad & (a[m] > 0)].min())
+            line += f"{m} {worst:.1e}   "
         print(line)
 
 
