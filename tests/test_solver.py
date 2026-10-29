@@ -259,7 +259,12 @@ def test_shrinking_parameters_and_counters():
     ):
         r = smo_solver.solve_classification(x, y, 0.05, **opts, **kw)
         assert abs(r.dual_objective - off.dual_objective) < 1e-8
+    # a high minimal fraction suppresses shrinking altogether
+    never = smo_solver.solve_classification(x, y, 0.05, shrinking_min_fraction=0.95, **kw)
+    assert never.shrinks == 0 and abs(never.dual_objective - off.dual_objective) < 1e-8
     for bad in (
+        {"shrinking_min_fraction": 1.0},
+        {"shrinking_min_fraction": -0.1},
         {"shrinking_exponent": 0.0},
         {"shrinking_exponent": 1.5},
         {"shrinking_factor": 0.0},

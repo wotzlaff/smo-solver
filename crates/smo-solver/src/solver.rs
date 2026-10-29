@@ -18,7 +18,10 @@
 //!
 //! *Shrinking* (Strasdat, Sec. 7.10): a variable at a bound is removed from the active set if
 //! its shifted gradient `g_i + b + s_i c` exceeds `factor · r(α)^η` with the wrong sign for
-//! leaving the bound. Before termination the full problem is restored and checked again.
+//! leaving the bound (defaults `factor = 1`, `η = 1`, see the study in `benchmarks/`). An
+//! attempt that would remove at most 10 % of the active set is skipped, because it does not pay
+//! for the restoration of the full problem. Before termination the full problem is restored and
+//! checked again.
 
 use crate::clock::Instant;
 
@@ -83,10 +86,15 @@ pub struct SmoOptions {
     pub shrinking: bool,
     /// Number of steps between two shrinking attempts (`0`: `min(n, 1000)`).
     pub shrinking_period: u64,
-    /// Exponent `η ∈ (0, 1)` of the shrinking threshold `factor · r^η`.
+    /// Exponent `η ∈ (0, 1]` of the shrinking threshold `factor · r^η`. The thesis (Cor. 7.37)
+    /// requires `η < 1`; the default `η = 1` was found to be faster and equally safe in practice
+    /// because the full problem is always restored and checked before termination.
     pub shrinking_exponent: f64,
     /// Factor of the shrinking threshold.
     pub shrinking_factor: f64,
+    /// A shrinking attempt is skipped unless it removes more than this fraction of the active set
+    /// (removing a handful of variables does not pay for the restoration of the full problem).
+    pub shrinking_min_fraction: f64,
     /// Memory budget of the kernel row cache in megabytes.
     pub cache_size_mb: f64,
     /// Number of steps between two callback invocations.
@@ -105,8 +113,9 @@ impl Default for SmoOptions {
             two_sided: true,
             shrinking: true,
             shrinking_period: 0,
-            shrinking_exponent: 0.5,
+            shrinking_exponent: 1.0,
             shrinking_factor: 1.0,
+            shrinking_min_fraction: 0.1,
             cache_size_mb: 256.0,
             callback_period: 1000,
         }
@@ -169,6 +178,9 @@ pub struct SmoResult {
     pub unshrinks: u64,
     /// Smallest size of the active set during the run.
     pub min_active: usize,
+    /// Bound-aware violation `r◇(α, ρ) / ρ` of the final point ([`StoppingCriterion::BoundAware`]),
+    /// or `NaN` if the 1-norm constraint is present (the measure ignores it).
+    pub bound_aware: f64,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
@@ -346,6 +358,12 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             return Err(ProblemError::InvalidParameter {
                 what: "shrinking_factor",
                 value: opt.shrinking_factor,
+            });
+        }
+        if !(0.0..1.0).contains(&opt.shrinking_min_fraction) {
+            return Err(ProblemError::InvalidParameter {
+                what: "shrinking_min_fraction (must be in [0, 1))",
+                value: opt.shrinking_min_fraction,
             });
         }
         if !(opt.shrinking_exponent > 0.0 && opt.shrinking_exponent <= 1.0) {
@@ -731,7 +749,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             })
             .collect();
         let n_keep = keep.iter().filter(|&&k| k).count();
-        if n_keep == m {
+        if (m - n_keep) as f64 <= self.opt.shrinking_min_fraction * m as f64 {
             return;
         }
         let order: Vec<usize> = (0..m)
@@ -901,6 +919,11 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         let ex = self.scan();
         let (violation, _, _) = self.maximal_violating_pair(&ex);
         let (b, c) = self.bias(&ex);
+        let bound_aware = if self.constrained {
+            f64::NAN
+        } else {
+            self.bound_aware_measure()
+        };
         let alpha = self.unpermuted(&self.alpha);
         let ka_perm: Vec<f64> = (0..self.g.len())
             .map(|pos| self.g[pos] - self.q[pos] * self.alpha[pos] - self.p[pos])
@@ -925,6 +948,7 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             shrinks: self.shrinks,
             unshrinks: self.unshrinks,
             min_active: self.min_active,
+            bound_aware,
             cache_hits: self.cache.hits,
             cache_misses: self.cache.misses,
         }

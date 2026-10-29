@@ -26,7 +26,7 @@ which tunes SVM hyperparameters with exact gradients.
   least squares, custom problems via `solve_dual`)
 - **working set selection**: maximal violating pair, second-order (maximal unbounded decrease)
   and bound-aware maximal decrease (default)
-- **shrinking** with the fixed-variable detection rule of the thesis, **LRU kernel row cache**
+- **shrinking** with the fixed-variable detection rule of the thesis (tuned defaults, see below), **LRU kernel row cache**
 - **warm starts**, time limits, progress callbacks, `Ctrl-C` support
 - Python: **zero-copy NumPy input**, GIL released while solving, scikit-learn compatible
   estimators `SmoSVC` (binary and one-vs-rest), `SmoSVR`, `SmoLSSVR`
@@ -147,6 +147,27 @@ instead of 0.08. At equal gap both rules need the same number of steps (`n = 300
 so the convergence speed is set by the conditioning of the problem, not by the selection rule.
 The loops over the active set use AVX2 when available (detected at run time).
 Decision values agree to about `1e-3`.
+
+## Shrinking
+
+Variables that sit at a bound and whose shifted gradient exceeds `shrinking_factor · r^shrinking_exponent`
+(`r`: the violation measure) are removed from the active set; before termination the full problem is
+restored and checked again, so the result does not depend on the heuristic. The defaults
+(`shrinking_exponent = 1`, `shrinking_factor = 1`, `shrinking_min_fraction = 0.1`) come from a study
+(`benchmarks/shrinking_study.py`, classification with n = 5000 and ε-regression with n = 2000, three
+kernel widths, two regularization parameters, two tolerances, plus an active 1-norm bound):
+
+| | geometric mean speed-up vs. no shrinking | worst case |
+|---|---:|---:|
+| earlier default (`exponent = 0.5`, no minimal fraction) | 1.25 | 0.62 |
+| current default | 1.56 | 0.97 |
+
+The speed-up grows with the problem size and with the requested accuracy (classification, n = 10 000: 1.6× at
+tolerance `1e-2`, 2.4× at `1e-5`). A factor below 1 removes variables too early (twice as many steps because
+variables have to return), a larger factor shrinks too late. An attempt that would remove at most 10 % of the
+active set is skipped: with a narrow kernel almost every sample is a support vector, nothing can be shrunk and
+the restoration of the full problem used to cost up to 60 % extra time. The result reports `shrinks`,
+`unshrinks` (restorations before termination) and `min_active`.
 
 ## Testing
 

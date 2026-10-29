@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Shrinking defaults from a study (`benchmarks/shrinking_study.py`): `shrinking_exponent = 1` (was 0.5)
+  and a new option `shrinking_min_fraction = 0.1` that skips attempts removing at most 10 % of the active
+  set. Geometric mean speed-up over 24 settings against no shrinking 1.56 (was 1.25), worst case 0.97 (was
+  0.62, narrow kernels); ε-regression is up to 1.9 times faster than before. Results are unchanged.
+
+### Added
+- `shrinking_factor`, `shrinking_exponent` and `shrinking_min_fraction` in the Python functions; the result
+  reports `shrinks`, `unshrinks`, `min_active` and `bound_aware` (the bound-aware violation of the final point).
+- `benchmarks/stopping_study.py`: which optimality measure predicts the error of the solution best.
+
 ## 0.1.2 – 2026-10-29
 
 ### Added
