@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 – 2026-10-29
 
 ### Changed
 - Faster SMO (same iterates): distances to the bounds are kept as arrays, extremal-value scans
@@ -12,7 +12,7 @@
 - The extra SMO steps of ε-regression compared with LIBSVM at `n = 5000` are a stopping artefact
   (different duality gap at the same tolerance), see the performance section of the README.
 
-## 0.1.0 – unreleased
+## 0.1.0 – 2026-10-28
 
 Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legacy-nim`).
 
