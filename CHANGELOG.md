@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 – 2026-10-29
 
 ### Changed
 - Shrinking defaults from a study (`benchmarks/shrinking_study.py`): `shrinking_exponent = 1` (was 0.5)
