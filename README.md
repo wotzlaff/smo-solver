@@ -115,8 +115,13 @@ indicative only):
 | ε-regression | 2000 | 0.51 s | 0.55 s | 42 591 / 44 255 |
 | ε-regression | 5000 | 11.1 s | 9.6 s | 387 707 / 304 960 |
 
-Classification needs as many steps as LIBSVM; for ε-regression it needs up to ~25 % more at
-larger `n`. The loops over the active set use AVX2 when available (detected at run time).
+Classification needs as many steps as LIBSVM. The higher step count for ε-regression at
+`n = 5000` is an effect of the stopping point, not of the working set rule: with LIBSVM's rule
+(`working_set="mud"`) the solver stops after 281 751 steps, but with a duality gap of 0.35
+instead of 0.08. At equal gap both rules need the same number of steps (`n = 3000`, tolerances
+`1e-2` … `1e-4`). Almost all steps are unconstrained two-variable steps on the free variables,
+so the convergence speed is set by the conditioning of the problem, not by the selection rule.
+The loops over the active set use AVX2 when available (detected at run time).
 Decision values agree to about `1e-3`.
 
 ## Testing

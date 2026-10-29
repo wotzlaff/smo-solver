@@ -8,6 +8,10 @@
   run-time detection (scalar fallback), lazy compaction of cached rows on shrinking.
   ε-regression n = 5000: 38 s → 11 s, classification n = 5000: 1.3 s → 0.6 s.
 
+### Documentation
+- The extra SMO steps of ε-regression compared with LIBSVM at `n = 5000` are a stopping artefact
+  (different duality gap at the same tolerance), see the performance section of the README.
+
 ## 0.1.0 – unreleased
 
 Complete rewrite of the former Nim package `nimsmo` (preserved as git tag `legacy-nim`).
