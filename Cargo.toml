@@ -9,6 +9,7 @@ rust-version = "1.75"
 authors = ["Nico Strasdat <nstrasdat@gmail.com>"]
 license = "BSD-3-Clause"
 repository = "https://github.com/wotzlaff/smo-solver"
+homepage = "https://wotzlaff.github.io/svm-site/"
 
 [profile.release]
 lto = "thin"

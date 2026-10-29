@@ -27,6 +27,8 @@ sklearn = ["scikit-learn>=1.2"]
 
 [project.urls]
 Homepage = "https://wotzlaff.github.io/svm-site/"
+"Interactive demos" = "https://wotzlaff.github.io/svm-site/explore/"
+Benchmarks = "https://wotzlaff.github.io/svm-site/benchmarks/"
 Repository = "https://github.com/wotzlaff/smo-solver"
 
 [dependency-groups]
