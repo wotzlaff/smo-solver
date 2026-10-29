@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 – 2026-10-29
 
 ### Added
 - Bound-aware stopping criterion (`stopping="bound_aware"`, `rho`; thesis Def. 7.21): stops when
