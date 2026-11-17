@@ -370,7 +370,9 @@ impl DualProblem {
             obj += 0.5 * alpha[i] * ka[i] + self.loss(i, ka[i] + b + self.sign[i] * c);
         }
         if let Some(a) = self.max_asum {
-            obj += a * c;
+            // An infinite bound is inactive: its multiplier is zero, and its contribution
+            // is zero rather than IEEE infinity * zero = NaN.
+            obj += if c == 0.0 { 0.0 } else { a * c };
         }
         obj
     }

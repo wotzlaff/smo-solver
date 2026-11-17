@@ -23,6 +23,7 @@ class _BaseSmo(BaseEstimator):
         "max_steps",
         "time_limit",
         "working_set",
+        "working_set_size",
         "stopping",
         "rho",
         "cache_size_mb",
@@ -117,6 +118,8 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         Bound on ``sum |alpha_i|`` (generalised nu-SVM).
     class_weight : dict or "balanced", optional
         Weights per class, multiplied with ``sample_weight``.
+    working_set_size : int
+        Number of dual variables in a jointly solved block (2–64; default 2: classic SMO).
     tol, max_steps, time_limit, working_set, stopping, rho, cache_size_mb
         Solver options, see :func:`smo_solver.solve_classification`.
     """
@@ -137,6 +140,7 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        working_set_size: int = 2,
         stopping: str = "violation",
         rho: float | None = None,
         cache_size_mb: float = 256.0,
@@ -154,6 +158,7 @@ class SmoSVC(ClassifierMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.working_set_size = working_set_size
         self.stopping = stopping
         self.rho = rho
         self.cache_size_mb = cache_size_mb
@@ -225,6 +230,7 @@ class SmoSVR(RegressorMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        working_set_size: int = 2,
         stopping: str = "violation",
         rho: float | None = None,
         cache_size_mb: float = 256.0,
@@ -241,6 +247,7 @@ class SmoSVR(RegressorMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.working_set_size = working_set_size
         self.stopping = stopping
         self.rho = rho
         self.cache_size_mb = cache_size_mb
@@ -286,6 +293,7 @@ class SmoLSSVR(RegressorMixin, _BaseSmo):
         max_steps: int = 100_000_000,
         time_limit: float | None = None,
         working_set: str = "md",
+        working_set_size: int = 2,
         stopping: str = "violation",
         rho: float | None = None,
         cache_size_mb: float = 256.0,
@@ -299,6 +307,7 @@ class SmoLSSVR(RegressorMixin, _BaseSmo):
         self.max_steps = max_steps
         self.time_limit = time_limit
         self.working_set = working_set
+        self.working_set_size = working_set_size
         self.stopping = stopping
         self.rho = rho
         self.cache_size_mb = cache_size_mb

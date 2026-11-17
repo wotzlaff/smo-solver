@@ -524,3 +524,127 @@ fn shrinking_counters_and_parameter_validation() {
     let res = solve(&kernel, &problem, &aggressive).unwrap();
     assert!((res.dual_objective - plain.dual_objective).abs() < 1e-8);
 }
+
+#[test]
+fn block_sizes_match_pair_solutions_and_preserve_constraints() {
+    let (x, y, t) = dataset(32, 2, 1519);
+    let kernel = FeatureKernel::new(&x, 2, KernelFunction::Rbf { gamma: 0.8 });
+    for problem in [
+        DualProblem::classification(&y, 0.05, None, 1.0, 0.2, None).unwrap(),
+        DualProblem::regression(&t, 0.05, None, 0.05, 0.2, None).unwrap(),
+        DualProblem::regression(&t, 0.01, None, 0.05, 0.2, Some(3.0)).unwrap(),
+        DualProblem::least_squares(&t, 0.1, None).unwrap(),
+    ] {
+        let baseline = solve(&kernel, &problem, &tight()).unwrap();
+        for size in [3, 4, 8, 16] {
+            let options = SmoOptions {
+                working_set_size: size,
+                max_steps: 200_000,
+                shrinking_period: 7,
+                cache_size_mb: 0.0,
+                ..tight()
+            };
+            let result = solve(&kernel, &problem, &options).unwrap();
+            assert_optimal(&problem, &result, 2e-6);
+            assert!(
+                (result.dual_objective - baseline.dual_objective).abs() < 1e-7,
+                "size {size}: {} vs {}",
+                result.dual_objective,
+                baseline.dual_objective
+            );
+            let warm =
+                solve_with(&kernel, &problem, &options, Some(&result.alpha), |_| false).unwrap();
+            assert_optimal(&problem, &warm, 2e-6);
+        }
+    }
+}
+
+#[test]
+fn block_handles_singular_kernel_and_zero_weights() {
+    let x = [0.0, 0.0, 1.0, 1.0, 2.0, 2.0];
+    let y = [-1.0, 1.0, -1.0, 1.0, 1.0, -1.0];
+    let weights = [0.0, 0.5, 1.0, 0.0, 0.5, 1.0];
+    let kernel = FeatureKernel::new(&x, 1, KernelFunction::Linear);
+    let problem =
+        DualProblem::classification(&y, 0.1, Some(&weights), 1.0, 0.0, Some(2.0)).unwrap();
+    for size in [4, 8, 16, 64] {
+        let result = solve(
+            &kernel,
+            &problem,
+            &SmoOptions {
+                working_set_size: size,
+                ..tight()
+            },
+        )
+        .unwrap();
+        assert_optimal(&problem, &result, 1e-7);
+        assert_eq!(result.alpha[0], 0.0);
+        assert_eq!(result.alpha[3], 0.0);
+    }
+}
+
+#[test]
+fn invalid_block_sizes_are_rejected() {
+    let kernel = FeatureKernel::new(&[0.0, 1.0], 1, KernelFunction::Linear);
+    let problem = DualProblem::classification(&[-1.0, 1.0], 0.1, None, 1.0, 0.0, None).unwrap();
+    for size in [0, 1, 65, usize::MAX] {
+        assert!(solve(
+            &kernel,
+            &problem,
+            &SmoOptions {
+                working_set_size: size,
+                ..tight()
+            }
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn block_does_not_snap_across_tiny_bound_intervals() {
+    let kernel = FeatureKernel::new(&[0.0, 0.0, 0.0, 0.0], 1, KernelFunction::Linear);
+    let problem = DualProblem {
+        lambda: 1.0,
+        kernel_index: vec![0, 1, 2, 3],
+        q: vec![1.0; 4],
+        p: vec![0.0, -1.0, 1.0, 0.0],
+        lo: vec![0.0, -2.0, -2.0, -2.0],
+        hi: vec![1e-18, 2.0, 2.0, 2.0],
+        sign: vec![0.0; 4],
+        max_asum: None,
+    };
+    let result = solve(
+        &kernel,
+        &problem,
+        &SmoOptions {
+            working_set_size: 4,
+            ..tight()
+        },
+    )
+    .unwrap();
+    assert_optimal(&problem, &result, 1e-8);
+    assert_eq!(result.alpha[0], 0.0);
+    assert!((result.alpha[1] - 1.0).abs() < 1e-9);
+    assert!((result.alpha[2] + 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn infinite_norm_limit_remains_inactive_with_blocks() {
+    let (x, _, t) = dataset(12, 2, 17);
+    let kernel = FeatureKernel::new(&x, 2, KernelFunction::Rbf { gamma: 0.8 });
+    let plain = DualProblem::regression(&t, 0.1, None, 0.05, 0.2, None).unwrap();
+    let unlimited = DualProblem::regression(&t, 0.1, None, 0.05, 0.2, Some(f64::INFINITY)).unwrap();
+    for size in [2, 8] {
+        let options = SmoOptions {
+            working_set_size: size,
+            ..tight()
+        };
+        let reference = solve(&kernel, &plain, &options).unwrap();
+        let result = solve(&kernel, &unlimited, &options).unwrap();
+        assert_optimal(&unlimited, &result, 1e-7);
+        let primal = plain.primal_objective(&result.alpha, &result.ka, result.b, 0.0);
+        assert!((result.primal_objective - primal).abs() < 1e-12);
+        assert!((result.dual_objective - reference.dual_objective).abs() < 1e-9);
+        assert_eq!(result.c, 0.0);
+    }
+}

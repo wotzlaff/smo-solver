@@ -22,6 +22,7 @@
 //! assert!(model.decision(&[1.0, 1.1]) > 0.0);
 //! ```
 
+mod block_qp;
 mod cache;
 mod clock;
 pub mod kernel;

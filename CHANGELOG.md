@@ -3,11 +3,21 @@
 ## Unreleased
 
 ### Added
+- Optional joint block updates via `working_set_size` (2–64, default 2), in Rust, all Python
+  solve functions and the scikit-learn estimators. A dense active-set QP handles the sum,
+  box and optional 1-norm constraints together. The existing working-set rule chooses a
+  seed pair; larger blocks include matching regression copies and additional candidates.
+  Singular or rejected block steps fall back to the original pair update. Steps, callback
+  periods and iteration limits count outer iterations; the default two-variable path is unchanged.
 - The progress callback of the Python functions receives `alpha` (a copy of the current iterate, original order).
 - `benchmarks/working_set_study.py` (thesis Sec. 10.2.1–10.2.3): MVP, baMVP, MuDP, MDP and tMDP compared by the
   development of the optimality measures; baMVP and tMDP in a NumPy reference SMO validated against the solver.
 - `benchmarks/convergence_study.py` (Sec. 10.2.4–10.2.7, 10.2.9): relations between the measures, their λ factors,
   the smoothed hinge loss, support vectors over λ and scaling over the problem size.
+
+### Fixed
+- An infinite `max_asum` now contributes zero to the primal objective when its multiplier is
+  zero, so the returned objective and duality gap remain finite instead of forming `inf * 0`.
 
 ## 0.1.3 – 2026-10-29
 

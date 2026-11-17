@@ -1,8 +1,10 @@
 //! Sequential Minimal Optimization for [`DualProblem`]s.
 //!
-//! In every step two variables `(i, j)` are updated along `α ← α + t (e_j - e_i)`, which keeps
+//! By default two variables `(i, j)` are updated along `α ← α + t (e_j - e_i)`, which keeps
 //! `Σ α = 0`. The step size `t` minimises the (quadratic) objective along this direction
 //! subject to the bounds and, if present, the 1-norm constraint.
+//! Larger `working_set_size` values use a jointly solved dense block QP instead, with the
+//! original pair step as fallback. Iteration limits and callback periods count outer updates.
 //!
 //! *Optimality.* With the dual gradient `g_i = ka_i + q_i α_i + p_i` and
 //! `I_down = {i : α_i > lo_i}`, `I_up = {j : α_j < hi_j}` the violation measure is
@@ -25,6 +27,7 @@
 
 use crate::clock::Instant;
 
+use crate::block_qp;
 use crate::cache::RowCache;
 use crate::kernel::Kernel;
 use crate::measures;
@@ -73,12 +76,15 @@ pub struct SmoOptions {
     /// Step size bound `ρ` of the bound-aware measure (`0`: `λ`, the value used in the
     /// computational study of the thesis, Sec. 10.2.2).
     pub rho: f64,
-    /// Maximal number of SMO steps.
+    /// Maximal number of outer working-set updates (pair steps by default).
     pub max_steps: u64,
     /// Wall-clock time limit in seconds.
     pub time_limit: Option<f64>,
     /// Working set selection rule.
     pub working_set: WorkingSetSelection,
+    /// Maximum joint working-set size (`2`: original SMO pair updates; `3..=64`: dense block QP).
+    /// Larger sets include the selected seed pair and informative complementary variables.
+    pub working_set_size: usize,
     /// Second-order rules: search a partner for both indices of the maximal violating pair
     /// (Strasdat, Def. 7.27/7.28) instead of only for the first one (as in LIBSVM).
     pub two_sided: bool,
@@ -110,6 +116,7 @@ impl Default for SmoOptions {
             max_steps: 100_000_000,
             time_limit: None,
             working_set: WorkingSetSelection::default(),
+            working_set_size: 2,
             two_sided: true,
             shrinking: true,
             shrinking_period: 0,
@@ -348,6 +355,12 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
         alpha0: Option<&[f64]>,
     ) -> Result<Self, ProblemError> {
         let n = prob.len();
+        if !(2..=64).contains(&opt.working_set_size) {
+            return Err(ProblemError::InvalidParameter {
+                what: "working_set_size (must be in 2..=64)",
+                value: opt.working_set_size as f64,
+            });
+        }
         if !(opt.rho >= 0.0 && opt.rho.is_finite()) {
             return Err(ProblemError::InvalidParameter {
                 what: "rho",
@@ -624,6 +637,304 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             }
         }
         (best.1, best.2)
+    }
+
+    /// Adds complementary variables to the seed pair, particularly the two regression copies
+    /// sharing its kernel rows. Then fill with extreme gradients in both movement directions.
+    fn block_indices(&self, i: usize, j: usize) -> Vec<usize> {
+        let size = self.opt.working_set_size.min(self.n_active);
+        let mut selected = vec![i, j];
+        for seed in [i, j] {
+            if selected.len() >= size {
+                break;
+            }
+            if let Some(pos) = (0..self.n_active).find(|&pos| {
+                self.kidx[pos] == self.kidx[seed]
+                    && self.sign[pos] != self.sign[seed]
+                    && self.lo[pos] < self.hi[pos]
+                    && !selected.contains(&pos)
+            }) {
+                selected.push(pos);
+            }
+        }
+        // Partial selection keeps the scan linear in the full problem size; only a small
+        // candidate prefix is sorted, and the selected seed pair remains in every block.
+        let mut down: Vec<usize> = (0..self.n_active)
+            .filter(|&k| self.room_down[k] > 0.0)
+            .collect();
+        let mut up: Vec<usize> = (0..self.n_active)
+            .filter(|&k| self.room_up[k] > 0.0)
+            .collect();
+        let cap = 2 * size;
+        let down_order = |&a: &usize, &b: &usize| self.g[b].total_cmp(&self.g[a]).then(a.cmp(&b));
+        let up_order = |&a: &usize, &b: &usize| self.g[a].total_cmp(&self.g[b]).then(a.cmp(&b));
+        if down.len() > cap {
+            down.select_nth_unstable_by(cap, down_order);
+            down.truncate(cap);
+        }
+        if up.len() > cap {
+            up.select_nth_unstable_by(cap, up_order);
+            up.truncate(cap);
+        }
+        down.sort_unstable_by(down_order);
+        up.sort_unstable_by(up_order);
+        // For an active norm bound, include two movable variables per sign group if possible.
+        // This permits simultaneous pair motion in both groups on the active face.
+        if self.at_asum_bound() && size >= 4 {
+            for sign in [1.0, -1.0] {
+                while selected.iter().filter(|&&k| self.sign[k] == sign).count() < 2
+                    && selected.len() < size
+                {
+                    let next = down
+                        .iter()
+                        .chain(&up)
+                        .copied()
+                        .find(|&k| self.sign[k] == sign && !selected.contains(&k))
+                        .or_else(|| {
+                            (0..self.n_active).find(|&k| {
+                                self.sign[k] == sign
+                                    && self.lo[k] < self.hi[k]
+                                    && !selected.contains(&k)
+                            })
+                        });
+                    if let Some(k) = next {
+                        selected.push(k);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        for rank in 0..down.len().max(up.len()) {
+            for candidate in [down.get(rank), up.get(rank)].into_iter().flatten() {
+                if selected.len() >= size {
+                    return selected;
+                }
+                if !selected.contains(candidate) {
+                    selected.push(*candidate);
+                }
+            }
+        }
+        selected
+    }
+
+    /// One joint block step, with a single pass over the outer gradient. Returns false when
+    /// a numerical failure or an insufficient decrease calls for the original pair step.
+    fn update_block(&mut self, i: usize, j: usize) -> bool {
+        let selected = self.block_indices(i, j);
+        let size = selected.len();
+        if size <= 2 {
+            return false;
+        }
+        let mut h = vec![vec![0.0; size]; size];
+        // Read each row immediately: a tiny LRU cache may evict it at the very next insertion.
+        for (r, &pos) in selected.iter().enumerate() {
+            let slot = self.cache.ensure(self.kernel, self.kidx[pos]);
+            for (c, &other) in selected.iter().enumerate() {
+                h[r][c] = self.cache.row(slot)[other] * self.inv_lambda;
+            }
+            h[r][r] += self.q[pos];
+        }
+        let gradient: Vec<f64> = selected.iter().map(|&k| self.g[k]).collect();
+        let lower: Vec<f64> = selected
+            .iter()
+            .map(|&k| self.lo[k] - self.alpha[k])
+            .collect();
+        let upper: Vec<f64> = selected
+            .iter()
+            .map(|&k| self.hi[k] - self.alpha[k])
+            .collect();
+        let sign: Vec<f64> = selected.iter().map(|&k| self.sign[k]).collect();
+        let slack = (self.max_asum - self.asum).max(0.0);
+        let mut delta = block_qp::solve(
+            &h,
+            &gradient,
+            &lower,
+            &upper,
+            self.constrained.then_some((&sign[..], slack)),
+            self.opt.tol * 0.05,
+        );
+        // Round to actual representable alpha changes, snapping tiny bound excursions. Then
+        // repair both equality and (when binding) signed sums in the two sign groups.
+        for r in 0..size {
+            let pos = selected[r];
+            let mut next = (self.alpha[pos] + delta[r]).clamp(self.lo[pos], self.hi[pos]);
+            // Active-set arithmetic can leave a blocker a few ulps inside its bound. The
+            // outer SMO logic deliberately uses exact comparisons, so preserve that invariant.
+            let mut rounding = 16.0 * f64::EPSILON * next.abs().max(1.0);
+            if self.lo[pos].is_finite() && self.hi[pos].is_finite() {
+                rounding = rounding.min(0.25 * (self.hi[pos] - self.lo[pos]));
+            }
+            let down = (next - self.lo[pos]).abs();
+            let up = (next - self.hi[pos]).abs();
+            if down <= rounding && down <= up {
+                next = self.lo[pos];
+            } else if up <= rounding {
+                next = self.hi[pos];
+            }
+            delta[r] = next - self.alpha[pos];
+        }
+        let signed_change: f64 = delta.iter().zip(&sign).map(|(a, s)| a * s).sum();
+        let two_groups =
+            self.constrained && sign.iter().any(|&s| s > 0.0) && sign.iter().any(|&s| s < 0.0);
+        let target_signed = signed_change.min(slack);
+        for group in 0..if two_groups { 2 } else { 1 } {
+            let in_group = |r: usize| !two_groups || (sign[r] > 0.0) == (group == 0);
+            let sum: f64 = (0..size).filter(|&r| in_group(r)).map(|r| delta[r]).sum();
+            let target = if two_groups {
+                if group == 0 {
+                    0.5 * target_signed
+                } else {
+                    -0.5 * target_signed
+                }
+            } else {
+                0.0
+            };
+            let correction = target - sum;
+            if correction != 0.0 {
+                let candidate = (0..size)
+                    .filter(|&r| in_group(r))
+                    .filter(|&r| {
+                        let d = delta[r] + correction;
+                        lower[r] <= d && d <= upper[r]
+                    })
+                    .max_by(|&a, &b| {
+                        let room = |r: usize| (upper[r] - delta[r]).min(delta[r] - lower[r]);
+                        room(a).total_cmp(&room(b))
+                    });
+                let Some(r) = candidate else {
+                    return false;
+                };
+                let interior_room = (upper[r] - delta[r]).min(delta[r] - lower[r]);
+                let rounding =
+                    32.0 * f64::EPSILON * delta.iter().map(|d| d.abs()).sum::<f64>().max(1.0);
+                if interior_room > rounding || correction.abs() > rounding {
+                    delta[r] += correction;
+                }
+            }
+        }
+        let change_scale = delta.iter().map(|d| d.abs()).sum::<f64>().max(1.0);
+        let sum: f64 = delta.iter().sum();
+        let signed_change: f64 = delta.iter().zip(&sign).map(|(a, s)| a * s).sum();
+        if sum.abs() > 1e-12 * change_scale
+            || (self.constrained && signed_change > slack + 1e-12 * change_scale)
+            || delta
+                .iter()
+                .enumerate()
+                .any(|(r, &d)| !d.is_finite() || d < lower[r] || d > upper[r])
+        {
+            return false;
+        }
+        // The seed pair belongs to this block. Do not accept a block worse than its cheap
+        // exact pair update (a stalled/singular active-set solve should retain SMO progress).
+        let eta = (h[0][0] + h[1][1] - 2.0 * h[0][1]).max(TAU);
+        let pair_slack = if self.constrained && sign[1] > sign[0] {
+            0.5 * slack
+        } else {
+            f64::INFINITY
+        };
+        let t = ((gradient[0] - gradient[1]) / eta)
+            .min(-lower[0])
+            .min(upper[1])
+            .min(pair_slack)
+            .max(0.0);
+        let pair_decrease = t * (gradient[0] - gradient[1] - 0.5 * eta * t);
+        // Recompute actual deltas once more after rounding alpha. Reject rather than drifting
+        // away from the equality constraints if the requested correction is not representable.
+        let next: Vec<f64> = selected
+            .iter()
+            .zip(&delta)
+            .map(|(&k, &d)| self.alpha[k] + d)
+            .collect();
+        let actual: Vec<f64> = selected
+            .iter()
+            .zip(&next)
+            .map(|(&k, &a)| a - self.alpha[k])
+            .collect();
+        let actual_signed: f64 = actual.iter().zip(&sign).map(|(a, s)| a * s).sum();
+        if next
+            .iter()
+            .enumerate()
+            .any(|(r, &a)| !a.is_finite() || a < self.lo[selected[r]] || a > self.hi[selected[r]])
+        {
+            return false;
+        }
+        let next_asum = if self.constrained {
+            self.alpha
+                .iter()
+                .zip(&self.sign)
+                .map(|(a, s)| a * s)
+                .sum::<f64>()
+                + actual_signed
+        } else {
+            0.0
+        };
+        let norm_scale = if self.max_asum.is_finite() {
+            self.max_asum.abs()
+        } else {
+            1.0
+        };
+        let norm_roundoff = 1e-12 * norm_scale.max(change_scale).max(1.0);
+        if self.constrained && next_asum > self.max_asum + norm_roundoff {
+            return false;
+        }
+        if actual.iter().sum::<f64>().abs() > 1e-12 * change_scale
+            || (self.constrained && actual_signed > slack + 1e-12 * change_scale)
+        {
+            return false;
+        }
+        let actual_linear: f64 = actual.iter().zip(&gradient).map(|(d, g)| d * g).sum();
+        let actual_quadratic: f64 = (0..size)
+            .map(|r| actual[r] * h[r].iter().zip(&actual).map(|(h, d)| h * d).sum::<f64>())
+            .sum();
+        let decrease = -actual_linear - 0.5 * actual_quadratic;
+        if !decrease.is_finite() || decrease <= 0.0 || decrease < 0.999 * pair_decrease {
+            return false;
+        }
+        for (r, &k) in selected.iter().enumerate() {
+            self.alpha[k] = next[r];
+            self.g[k] += self.q[k] * actual[r];
+            self.set_rooms(k);
+        }
+        if self.constrained {
+            // Snap the cached constraint level only when this step intentionally reaches
+            // the face and the difference is rounding-sized; never conceal an infeasible step.
+            self.asum = if self.max_asum.is_finite()
+                && (actual_signed - slack).abs() <= norm_roundoff
+                && (next_asum - self.max_asum).abs() <= norm_roundoff
+            {
+                self.max_asum
+            } else {
+                next_asum
+            };
+        }
+        self.value -= decrease;
+        // Accumulate all row contributions before updating the full gradient. Rows are fetched
+        // sequentially so this is correct even with a cache budget of only two rows.
+        let mut change = vec![0.0; self.n_active];
+        let mut rows: Vec<(usize, f64)> = Vec::new();
+        for (r, &k) in selected.iter().enumerate() {
+            if let Some((_, coefficient)) = rows.iter_mut().find(|(key, _)| *key == self.kidx[k]) {
+                *coefficient += actual[r];
+            } else {
+                rows.push((self.kidx[k], actual[r]));
+            }
+        }
+        for (key, coefficient) in rows {
+            if coefficient == 0.0 {
+                continue;
+            }
+            let slot = self.cache.ensure(self.kernel, key);
+            let coefficient = coefficient * self.inv_lambda;
+            for (value, &kernel) in change.iter_mut().zip(self.cache.row(slot)) {
+                *value += coefficient * kernel;
+            }
+        }
+        for (g, change) in self.g[..self.n_active].iter_mut().zip(change) {
+            *g += change;
+        }
+        self.pending = Some(self.scan());
+        true
     }
 
     /// Exact minimisation along `e_j - e_i` for active positions `i`, `j`.
@@ -905,7 +1216,9 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 WorkingSetSelection::MaximalViolatingPair => (i0, j1),
                 _ => self.second_order_pair(i0, j1),
             };
-            self.update(i, j);
+            if opt.working_set_size == 2 || !self.update_block(i, j) {
+                self.update(i, j);
+            }
             steps += 1;
         }
         self.finish(status, steps)

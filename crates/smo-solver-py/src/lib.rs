@@ -236,7 +236,7 @@ fn slice<'a>(a: &'a PyReadonlyArray1<'_, f64>, name: &str) -> PyResult<&'a [f64]
 }
 
 macro_rules! run_args {
-    ($tol:expr, $max_steps:expr, $time_limit:expr, $working_set:expr, $two_sided:expr, $stopping:expr, $rho:expr, $shrinking:expr,
+    ($tol:expr, $max_steps:expr, $time_limit:expr, $working_set:expr, $working_set_size:expr, $two_sided:expr, $stopping:expr, $rho:expr, $shrinking:expr,
      $shrinking_period:expr, $shrinking_exponent:expr, $shrinking_factor:expr, $shrinking_min_fraction:expr, $cache_size_mb:expr, $callback_period:expr, $alpha0:expr, $callback:expr) => {
         Run {
             options: SmoOptions {
@@ -244,6 +244,7 @@ macro_rules! run_args {
                 max_steps: $max_steps,
                 time_limit: $time_limit,
                 working_set: working_set($working_set)?,
+                working_set_size: $working_set_size,
                 two_sided: $two_sided,
                 stopping: stopping($stopping)?,
                 rho: $rho.unwrap_or(0.0),
@@ -267,7 +268,7 @@ macro_rules! run_args {
 #[pyo3(signature = (
     x, y, lam, *, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None, shift=1.0,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
+    working_set="md", working_set_size=2, two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -288,6 +289,7 @@ fn solve_classification(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    working_set_size: usize,
     two_sided: bool,
     stopping: &str,
     rho: Option<f64>,
@@ -312,6 +314,7 @@ fn solve_classification(
         max_steps,
         time_limit,
         working_set,
+        working_set_size,
         two_sided,
         stopping,
         rho,
@@ -334,7 +337,7 @@ fn solve_classification(
 #[pyo3(signature = (
     x, y, lam, *, epsilon=0.1, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None,
     smoothing=0.0, max_asum=None, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
+    working_set="md", working_set_size=2, two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +358,7 @@ fn solve_regression(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    working_set_size: usize,
     two_sided: bool,
     stopping: &str,
     rho: Option<f64>,
@@ -379,6 +383,7 @@ fn solve_regression(
         max_steps,
         time_limit,
         working_set,
+        working_set_size,
         two_sided,
         stopping,
         rho,
@@ -399,7 +404,7 @@ fn solve_regression(
 #[pyfunction]
 #[pyo3(signature = (
     x, y, lam, *, kernel="rbf", gamma=1.0, coef0=0.0, degree=3, weights=None,
-    tol=1e-3, max_steps=100_000_000, time_limit=None, working_set="md", two_sided=true, stopping="violation", rho=None,
+    tol=1e-3, max_steps=100_000_000, time_limit=None, working_set="md", working_set_size=2, two_sided=true, stopping="violation", rho=None,
     cache_size_mb=256.0, alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -417,6 +422,7 @@ fn solve_least_squares(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    working_set_size: usize,
     two_sided: bool,
     stopping: &str,
     rho: Option<f64>,
@@ -436,6 +442,7 @@ fn solve_least_squares(
         max_steps,
         time_limit,
         working_set,
+        working_set_size,
         two_sided,
         stopping,
         rho,
@@ -461,7 +468,7 @@ fn solve_least_squares(
 #[pyo3(signature = (
     x, lam, q, p, lo, hi, *, kernel_index=None, sign=None, max_asum=None, kernel="rbf",
     gamma=1.0, coef0=0.0, degree=3, tol=1e-3, max_steps=100_000_000, time_limit=None,
-    working_set="md", two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
+    working_set="md", working_set_size=2, two_sided=true, stopping="violation", rho=None, shrinking=true, shrinking_period=0, shrinking_exponent=1.0, shrinking_factor=1.0, shrinking_min_fraction=0.1, cache_size_mb=256.0,
     alpha0=None, callback=None, callback_period=1000
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -484,6 +491,7 @@ fn solve_dual(
     max_steps: u64,
     time_limit: Option<f64>,
     working_set: &str,
+    working_set_size: usize,
     two_sided: bool,
     stopping: &str,
     rho: Option<f64>,
@@ -518,6 +526,7 @@ fn solve_dual(
         max_steps,
         time_limit,
         working_set,
+        working_set_size,
         two_sided,
         stopping,
         rho,
