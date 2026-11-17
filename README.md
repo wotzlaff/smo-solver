@@ -290,6 +290,12 @@ uv run pytest                         # Python tests (incl. scikit-learn checks)
 Correctness is verified against independent references: zero duality gap, closed-form LS-SVM
 solutions, LIBSVM (via scikit-learn), SciPy's SLSQP and primal formulations solved with cvxpy.
 
+## Nonlinear optimization in the browser
+
+The [standalone L-BFGS-B prototype](tools/browser-optimizer/) compiles to WebAssembly.
+It takes a smooth objective and gradient from JavaScript and supports finite box
+bounds. The included browser example optimizes a bounded Rosenbrock problem.
+
 ## Known limitations
 
 - With an *active* 1-norm constraint and a very small `λ`, two-variable steps can zigzag between

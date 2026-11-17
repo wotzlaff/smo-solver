@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "svm-browser-optimizer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+basin = { version = "=3.3.0", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.107"
+wasm-bindgen = "=0.2.130"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

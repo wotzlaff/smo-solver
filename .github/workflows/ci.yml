@@ -25,6 +25,16 @@ jobs:
           cargo build -p smo-solver-wasm --profile wasm --target wasm32-unknown-unknown
           node -e "const b=require('fs').readFileSync('target/wasm32-unknown-unknown/wasm/smo_solver_wasm.wasm'); const i=WebAssembly.Module.imports(new WebAssembly.Module(b)); if(i.length) throw new Error('unexpected imports: '+JSON.stringify(i))"
 
+      - name: Test the browser optimizer
+        working-directory: tools/browser-optimizer
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets --release -- -D warnings
+          cargo test --locked --release
+          cargo install --locked --version 0.2.130 wasm-bindgen-cli
+          ./build-wasm.sh
+          node smoke.mjs
+
   python:
     runs-on: ${{ matrix.os }}
     strategy:

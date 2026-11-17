@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>L-BFGS-B in WebAssembly</title>
+<style>
+  body { font: 1rem/1.55 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+  button { font: inherit; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>L-BFGS-B in WebAssembly</h1>
+<p>Minimize the Rosenbrock function from (−1.2, 1), with x capped at 0.8.
+  The constrained optimum is (0.8, 0.64).</p>
+<button id="run" disabled>Optimize</button>
+<pre id="result" role="status">Loading optimizer…</pre>
+<script type="module">
+  import { createOptimizer } from "./optimizer.mjs";
+  import { rosenbrock } from "./example.mjs";
+
+  const button = document.querySelector("#run");
+  const output = document.querySelector("#result");
+  try {
+    const optimizer = await createOptimizer();
+    output.textContent = "Ready";
+    button.disabled = false;
+    button.addEventListener("click", () => {
+      try {
+        const { x, value, iterations, evaluations, status } = optimizer.minimize(rosenbrock);
+        output.textContent = [
+          status,
+          `Point: (${x[0].toFixed(6)}, ${x[1].toFixed(6)})`,
+          `Objective: ${value.toFixed(6)}`,
+          `Iterations: ${iterations}`,
+          `Evaluations: ${evaluations}`,
+        ].join("\n");
+      } catch (error) {
+        output.textContent = error.message;
+      }
+    });
+  } catch (error) {
+    output.textContent = error.message;
+  }
+</script>
