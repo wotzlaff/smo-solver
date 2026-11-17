@@ -10,7 +10,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
@@ -20,6 +20,62 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
+          path: dist
+
+  macos:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --target universal2-apple-darwin
+      - name: Verify universal2 architectures and installed wheel
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          import zipfile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          wheel = wheels[0]
+          assert "universal2" in wheel.name, wheel.name
+          with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(wheel) as archive:
+              extensions = [name for name in archive.namelist() if name.endswith(".so")]
+              assert extensions, "wheel contains no extension modules"
+              for name in extensions:
+                  extension = archive.extract(name, directory)
+                  architectures = subprocess.check_output(
+                      ["lipo", "-archs", extension], text=True
+                  ).split()
+                  assert {"x86_64", "arm64"} <= set(architectures), architectures
+          subprocess.check_call(["python", "-m", "pip", "install", str(wheel)])
+          PY
+          python - <<'PY'
+          import numpy as np
+          import smo_solver
+
+          x = np.linspace(-1, 1, 12)[:, None]
+          y = np.sin(2 * x[:, 0])
+          options = dict(smoothing=0.1, tol=1e-8, max_steps=50_000)
+          pair = smo_solver.solve_regression(x, y, 0.1, **options)
+          block = smo_solver.solve_regression(x, y, 0.1, working_set_size=4, **options)
+          assert pair.converged and block.converged
+          assert abs(block.alpha.sum()) < 1e-8
+          assert np.isfinite(block.gap)
+          np.testing.assert_allclose(block.dual_objective, pair.dual_objective, atol=1e-7)
+          np.testing.assert_allclose(block.ka + block.b, pair.ka + pair.b, atol=1e-6)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-universal2
           path: dist
 
   sdist:
@@ -37,7 +93,7 @@ jobs:
 
   publish:
     # requires a PyPI "trusted publisher" configured for this repository
-    needs: [wheels, sdist]
+    needs: [wheels, macos, sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
