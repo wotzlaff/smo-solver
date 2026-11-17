@@ -11,6 +11,9 @@ Stopping = Literal["violation", "bound_aware"]
 WorkingSet = Literal[
     "mvp", "mud", "md", "max_violating_pair", "max_unbounded_decrease", "max_decrease"
 ]
+# The dict holds step, elapsed, violation, dual_objective, n_active and alpha (a copy, original order).
+# alpha and dual_objective belong to the current iterate, violation to the previous one (it is
+# evaluated when the working set of the last step was selected).
 Callback = Callable[[dict[str, Any]], bool | None]
 Array1 = NDArray[np.float64]
 Array2 = NDArray[np.float64]

@@ -155,7 +155,10 @@ fn solve_problem(
                     .and_then(|_| info.set_item("elapsed", progress.elapsed))
                     .and_then(|_| info.set_item("violation", progress.violation))
                     .and_then(|_| info.set_item("dual_objective", progress.dual_objective))
-                    .and_then(|_| info.set_item("n_active", progress.n_active));
+                    .and_then(|_| info.set_item("n_active", progress.n_active))
+                    .and_then(|_| {
+                        info.set_item("alpha", progress.alpha.to_vec().into_pyarray(py))
+                    });
                 match filled
                     .and_then(|_| cb.call1(py, (info,)))
                     .and_then(|r| r.is_truthy(py))

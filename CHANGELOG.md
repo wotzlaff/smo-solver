@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- The progress callback of the Python functions receives `alpha` (a copy of the current iterate, original order).
+- `benchmarks/working_set_study.py` (thesis Sec. 10.2.1–10.2.3): MVP, baMVP, MuDP, MDP and tMDP compared by the
+  development of the optimality measures; baMVP and tMDP in a NumPy reference SMO validated against the solver.
+- `benchmarks/convergence_study.py` (Sec. 10.2.4–10.2.7, 10.2.9): relations between the measures, their λ factors,
+  the smoothed hinge loss, support vectors over λ and scaling over the problem size.
+
 ## 0.1.3 – 2026-10-29
 
 ### Changed

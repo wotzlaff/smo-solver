@@ -158,6 +158,22 @@ so the convergence speed is set by the conditioning of the problem, not by the s
 The loops over the active set use AVX2 when available (detected at run time).
 Decision values agree to about `1e-3`.
 
+## Working set rule and convergence
+
+`benchmarks/working_set_study.py` repeats Sec. 10.2.1–10.2.3 of the thesis (checkerboard data, n = 1000, four
+settings of λ and γ, hinge loss). The second-order rules (`md`, `mud`) need 4–15 times fewer steps than the
+maximal violating pair (`mvp`) and are practically equal to each other (within about 10 %, in no consistent
+order). The bound-aware pair (thesis Def. 7.21) behaves like `mvp`; the pair of maximal decrease over all pairs
+saves only 1.2–1.3 times the steps at `O(n²)` cost per step. Both exist only in a NumPy reference SMO inside the
+script, validated against the solver.
+
+`benchmarks/convergence_study.py` repeats Sec. 10.2.4–10.2.7 and 10.2.9. Along an `md` run the duality gap,
+the step length and the distance to the solution are proportional to the violation `r`, the decrease of the
+objective to `λ r²`, with the same λ exponents as in the thesis; the gap is about `4.4 r` (thesis `5.8 r`). With
+the smoothed hinge loss the gap falls like `r²`. The number of free variables hardly changes with λ or with n
+(n = 1000 … 50 000), and the time to tolerance `1e-8` grows like `n^0.9 … n^1.4` (thesis `n^1.6`); raw data in
+`benchmarks/results/`.
+
 ## Shrinking
 
 Variables that sit at a bound and whose shifted gradient exceeds `shrinking_factor · r^shrinking_exponent`
