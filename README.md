@@ -107,7 +107,7 @@ loss is quadratic on an interval. The decision function is `f(x) = 1/λ Σ_k β_
 uses the same scaling as LIBSVM; with `δ = 0` and `λ = 1/C` the solutions coincide with
 `sklearn.svm.SVC`/`SVR`.
 
-### Larger working sets (unreleased)
+### Larger working sets (0.2.0)
 
 `working_set_size` selects how many dual variables are jointly optimized per outer iteration:
 

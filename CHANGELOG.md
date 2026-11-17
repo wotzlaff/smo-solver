@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 – 2026-11-17
+
 ### Added
 - Optional joint block updates via `working_set_size` (2–64, default 2), in Rust, all Python
   solve functions and the scikit-learn estimators. A dense active-set QP handles the sum,
