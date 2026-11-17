@@ -1,0 +1,12 @@
+Python 3.14.9
+Linux-6.1.0-44-amd64-x86_64-with-glibc2.36
+smo-solver 0.1.3
+Logical CPUs: 12, RAYON_NUM_THREADS=1
+Command arguments: {'n': 1000, 'sizes': [2, 4, 8, 16], 'repeats': 3, 'tol': 1e-06, 'time_limit': 10.0, 'max_steps': 10000000, 'cases': None, 'out': PosixPath('benchmarks/results/block_working_sets.csv')}
+All measured calls run sequentially. No CPU affinity was set.
+Extension: /home/nico/svm/repos/smo-solver/python/smo_solver/_core.abi3.so
+Extension SHA256: 5658d70d3b6eb2a58adc20cbb7caa96a2e6ee259deca2f60260addb7b7b2717e
+Native source base commit: c1e7ff9c8887ba036b63f14a6aa0d7e094662b03; dirty=True
+Source solver.rs SHA256: d017c45779b6c7b5df8adda4848cb4cf8fdfaa4eb9208885ac74082039c7acdb
+Source block_qp.rs SHA256: 5a3917e0c6eccbf22c168730d22619fab493211f7d036547df5dc5a79fae660a
+Source problem.rs SHA256: fe0b27bcfb94c874a355e7ad120902f7ef5ceef3f22fc9d217f543079321ee3b

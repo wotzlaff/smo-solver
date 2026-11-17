@@ -26,6 +26,8 @@ which tunes SVM hyperparameters with exact gradients.
   least squares, custom problems via `solve_dual`)
 - **working set selection**: maximal violating pair, second-order (maximal unbounded decrease)
   and bound-aware maximal decrease (default)
+- optional **joint block updates** (`working_set_size=4`, or larger, up to 64);
+  default 2 retains classic SMO
 - **shrinking** with the fixed-variable detection rule of the thesis (tuned defaults, see below), **LRU kernel row cache**
 - **warm starts**, time limits, progress callbacks, `Ctrl-C` support
 - Python: **zero-copy NumPy input**, GIL released while solving, scikit-learn compatible
@@ -104,6 +106,89 @@ loss is quadratic on an interval. The decision function is `f(x) = 1/λ Σ_k β_
 `m_δ` is the quadratically smoothed maximum (`max(0, t)` for `δ = 0`). The stopping tolerance
 uses the same scaling as LIBSVM; with `δ = 0` and `λ = 1/C` the solutions coincide with
 `sklearn.svm.SVC`/`SVR`.
+
+### Larger working sets (unreleased)
+
+`working_set_size` selects how many dual variables are jointly optimized per outer iteration:
+
+```python
+from smo_solver import SmoSVR, solve_regression
+
+res = solve_regression(
+    x, targets, lam=1e-4, smoothing=0.1, max_asum=10,
+    working_set_size=4, tol=1e-6,
+)
+# Also available on SmoSVC, SmoSVR and SmoLSSVR:
+reg = SmoSVR(working_set_size=8)
+```
+
+The accepted range is 2–64, including odd sizes; a small problem or shrunk active set may use
+fewer variables. `working_set` still chooses the seed pair. A larger block adds matching
+regression copies and gradient candidates, then solves the dense local quadratic program with
+the sum constraint, box bounds and the optional 1-norm inequality together. The inequality can
+become active or be released. This can address zig-zagging between the two sign groups when
+the norm bound is active and lambda is small.
+
+An active-set method solves the block problem, with a pair-step fallback if a block cannot
+be accepted safely. The default remains 2, preserving the existing fast SMO path. Larger
+blocks do more work per iteration and need not be faster. `steps`, `max_steps`, shrinking
+periods and callback periods count **outer iterations**, not pair-equivalent work. The
+stopping measure and tolerance retain their meaning. Benchmark wall time at comparable final
+violation and duality gap rather than comparing iteration counts alone.
+
+`benchmarks/block_working_sets.py` compares sizes 2, 4, 8 and 16 with independently rebuilt
+kernel products, KKT violations and duality gaps. Release extension, one Rayon thread,
+`tol=1e-6`, minimum of three sequential runs on one shared machine:
+
+| problem | size 2 | size 4 | size 8 | size 16 |
+|---|---:|---:|---:|---:|
+| saved difficult ν-SVR, n = 5 | 0.386 s | 0.000174 s | 0.000200 s | 0.000026 s |
+| ν-SVR, n = 1000, λ = 0.01 | 9.33 s | 10.83 s† | 4.36 s | 3.38 s |
+| ordinary SVC, n = 1000 | 0.031 s | 0.102 s | 0.114 s | 0.189 s |
+| ordinary smoothed SVR, n = 1000 | 0.448 s | 1.987 s | 2.102 s | 2.933 s |
+
+† One additional run with a 20 s limit, after all three 10 s runs stopped just short of the
+target. All displayed runs converged at the same requested tolerance. In the n = 5 example
+there are ten dual variables, so size 16 solves the entire problem in one outer iteration;
+size 4 uses 33 iterations versus 1,744,616 pair steps. Recomputed gaps are below `6e-12`.
+For ν-SVR at n = 1000, sizes 8 and 16 are about 2.1× and 2.8× faster than pairs, with
+recomputed gaps below `3e-10`. On ordinary problems the block overhead outweighs the reduced
+iteration count. At the more difficult λ = 1e-4, every tested size stopped at the 10 s limit;
+size 16 had a smaller remaining gap, but none reached the target. These results support an
+explicit option, rather than a new default.
+
+Raw records and build provenance are in `benchmarks/results/block_working_sets*.{csv,txt}`.
+Reproduce the ordinary/hard cases and the converged moderate case with:
+
+```bash
+RAYON_NUM_THREADS=1 python benchmarks/block_working_sets.py --n 1000 \
+    --cases saved_nu_svr,nu_svr,svc,svr
+RAYON_NUM_THREADS=1 python benchmarks/block_working_sets.py --n 1000 \
+    --cases nu_svr_moderate --out benchmarks/results/block_working_sets_moderate.csv
+RAYON_NUM_THREADS=1 python benchmarks/block_working_sets.py --n 1000 \
+    --cases nu_svr_moderate --sizes 4 --repeats 1 --time-limit 20 \
+    --out benchmarks/results/block_working_sets_moderate_size4.csv
+```
+
+`benchmarks/block_hpo.py` measures complete `optimized-svm` fits (180 samples, three CV folds,
+SMO warm starts plus Newton and adjoint gradients). After correcting the Newton norm-bound
+activity check in `optimized-svm`, all sizes give the same CV error to roundoff. Minimum of
+two sequential fits, one BLAS/Rayon thread:
+
+| complete HPO fit | size 2 | size 4 | size 8 |
+|---|---:|---:|---:|
+| SVC | 0.226 s | 0.228 s | 0.233 s |
+| ν-SVR, active norm bound | 0.450 s | 0.306 s | 0.270 s |
+
+All optimizations converged; each best CV error was recomputed from cold fold solutions and
+each fold's norm bound checked outside the timed region. Run with the development sources:
+
+```bash
+PYTHONPATH=../optimized-svm/src:python RAYON_NUM_THREADS=1 python benchmarks/block_hpo.py
+```
+
+`block_hpo_before_norm_fix.*` contains diagnostic records from the previously incorrect
+Newton active-set handling. Those runs are not a valid performance baseline.
 
 ### Stopping criterion
 
@@ -209,7 +294,8 @@ solutions, LIBSVM (via scikit-learn), SciPy's SLSQP and primal formulations solv
 
 - With an *active* 1-norm constraint and a very small `λ`, two-variable steps can zigzag between
   the sign groups (for ε-SVR, both copies of a sample share one kernel row); convergence then
-  needs very many steps.
+  needs very many steps. The optional larger working sets address this case; see the
+  comparison above and `benchmarks/block_working_sets.py`.
 - Only quadratic conjugate losses are supported by SMO; smooth non-quadratic losses
   (e.g. logistic, Poisson) are handled by the Newton solver in `optimized-svm`.
 

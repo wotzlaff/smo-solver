@@ -1,0 +1,17 @@
+DIAGNOSTIC ONLY: pre-fix HPO runs can violate the norm constraint during CV.
+Do not use these records as a valid speed/accuracy baseline; see WORKLOG 2026-11-17.
+
+INVALID COMPARISON: before the inactive-Newton norm-bound certification fix.
+Reported CV errors can differ from fresh CV at the returned hyperparameters.
+Python 3.14.9, optimized-svm 0.5.0
+Optimized sources: /home/nico/svm/repos/optimized-svm/src/optimized_svm/__init__.py
+Arguments: {'n': 180, 'sizes': [2, 4, 8], 'repeats': 2, 'time_limit': 10.0, 'max_iter': 30, 'out': PosixPath('/home/nico/svm/repos/smo-block-study/benchmarks/results/block_hpo.csv')}
+Sequential calls, BLAS threads=1, deterministic data seed7 and CV seed0.
+Timed total fit includes all CV evaluations and final full-data training.
+Extension: /home/nico/svm/repos/smo-solver/python/smo_solver/_core.abi3.so
+Extension SHA256: 5658d70d3b6eb2a58adc20cbb7caa96a2e6ee259deca2f60260addb7b7b2717e
+Native source base commit: c1e7ff9c8887ba036b63f14a6aa0d7e094662b03; dirty=True
+Source solver.rs SHA256: d017c45779b6c7b5df8adda4848cb4cf8fdfaa4eb9208885ac74082039c7acdb
+Source block_qp.rs SHA256: 5a3917e0c6eccbf22c168730d22619fab493211f7d036547df5dc5a79fae660a
+Source problem.rs SHA256: fe0b27bcfb94c874a355e7ad120902f7ef5ceef3f22fc9d217f543079321ee3b
+Optimized training.py SHA256: c5550505c0a6f7b703bac919c0fe2409e08c604da29ef9306a130e58685b6f13
