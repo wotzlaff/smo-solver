@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 – 2026-11-20
 
 ### Changed
 - Performance (results bit-identical): kernel rows evaluate each distinct column only once (the two
