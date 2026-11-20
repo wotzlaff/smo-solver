@@ -51,6 +51,38 @@ pub(crate) fn extremal_values(g: &[f64], room_down: &[f64], room_up: &[f64]) -> 
     (bmax, bmin)
 }
 
+/// `out[p] = Σ_f (x[f] - data[cols[p] * dim + f])²`, summed over the features in increasing order
+/// (the squared Euclidean distance of `x` to the samples `cols`).
+///
+/// # Panics
+/// If `x.len() != dim`, `out` is shorter than `cols`, or a column is outside `data`.
+pub(crate) fn sq_dist_to_samples(
+    data: &[f64],
+    dim: usize,
+    x: &[f64],
+    cols: &[usize],
+    out: &mut [f64],
+) {
+    assert!(dim > 0 && x.len() == dim && out.len() >= cols.len());
+    let n = data.len() / dim;
+    assert!(cols.iter().all(|&c| c < n));
+    let out = &mut out[..cols.len()];
+    #[cfg(target_arch = "x86_64")]
+    if use_avx2() {
+        // SAFETY: AVX2 is available; `x.len() == dim`, `out.len() == cols.len()` and all columns
+        // satisfy `(c + 1) * dim <= data.len()` as checked above.
+        return unsafe { avx2::sq_dist_to_samples(data, dim, x, cols, out) };
+    }
+    sq_dist_scalar(data, dim, x, cols, out);
+}
+
+pub(crate) fn sq_dist_scalar(data: &[f64], dim: usize, x: &[f64], cols: &[usize], out: &mut [f64]) {
+    for (o, &c) in out.iter_mut().zip(cols) {
+        let z = &data[c * dim..(c + 1) * dim];
+        *o = x.iter().zip(z).map(|(a, b)| (a - b) * (a - b)).sum();
+    }
+}
+
 /// Data of the second-order working set search for the partners of `i0` (as `j`) and `j1`
 /// (as `i`); see `Smo::second_order_pair`.
 pub(crate) struct Candidates {
@@ -65,7 +97,7 @@ pub(crate) struct Candidates {
     pub two_sided: bool,
 }
 
-/// Per-variable slices of a block for [`Candidates::may_improve`].
+/// Per-variable slices of a block for [`Candidates::survivors`].
 pub(crate) struct Block<'a> {
     pub g: &'a [f64],
     pub cdiag: &'a [f64],
@@ -76,24 +108,31 @@ pub(crate) struct Block<'a> {
 }
 
 impl Candidates {
-    /// Division-free test whether some candidate of the block could have a predicted decrease
+    /// Division-free test whether the candidates of the block could have a predicted decrease
     /// larger than `best`: the decrease is at most `d²/(2 eta)` and (for bounded steps) at most
-    /// `d tmax`.
-    pub(crate) fn may_improve(&self, best: f64, b: &Block) -> bool {
+    /// `d tmax`. Bit `k` of the result is set if candidate `k` of the block passes the test as
+    /// partner of `i0` or (two-sided) of `j1`; the block has at most 64 entries.
+    pub(crate) fn survivors(&self, best: f64, b: &Block) -> u64 {
         let n = b.g.len();
+        assert!(n <= 64);
         assert!([b.cdiag, b.row_i, b.row_j, b.room_down, b.room_up]
             .iter()
             .all(|s| s.len() >= n));
         #[cfg(target_arch = "x86_64")]
         if use_avx2() {
             // SAFETY: AVX2 is available and the slice lengths were checked above.
-            return unsafe { avx2::may_improve(self, best, b) };
+            return unsafe { avx2::survivors(self, best, b) };
         }
-        let mut any = false;
-        for k in 0..n {
-            any |= self.test_up(best, b, k) | (self.two_sided & self.test_down(best, b, k));
+        self.survivors_scalar(best, b)
+    }
+
+    pub(crate) fn survivors_scalar(&self, best: f64, b: &Block) -> u64 {
+        let mut mask = 0u64;
+        for k in 0..b.g.len() {
+            let hit = self.test_up(best, b, k) | (self.two_sided & self.test_down(best, b, k));
+            mask |= u64::from(hit) << k;
         }
-        any
+        mask
     }
 
     #[inline(always)]
@@ -124,6 +163,38 @@ mod avx2 {
     use std::arch::x86_64::*;
 
     const W: usize = 4;
+
+    /// Four columns per vector: lane `l` accumulates over the features in order, exactly like the
+    /// scalar loop for column `l`.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn sq_dist_to_samples(
+        data: &[f64],
+        dim: usize,
+        x: &[f64],
+        cols: &[usize],
+        out: &mut [f64],
+    ) {
+        let base = data.as_ptr();
+        let mut p = 0;
+        while p + W <= cols.len() {
+            let c = &cols[p..p + W];
+            let o = [c[0] * dim, c[1] * dim, c[2] * dim, c[3] * dim];
+            let mut acc = _mm256_setzero_pd();
+            for (f, &xf) in x.iter().enumerate() {
+                let z = _mm256_set_pd(
+                    *base.add(o[3] + f),
+                    *base.add(o[2] + f),
+                    *base.add(o[1] + f),
+                    *base.add(o[0] + f),
+                );
+                let d = _mm256_sub_pd(_mm256_set1_pd(xf), z);
+                acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
+            }
+            _mm256_storeu_pd(out.as_mut_ptr().add(p), acc);
+            p += W;
+        }
+        super::sq_dist_scalar(data, dim, x, &cols[p..], &mut out[p..]);
+    }
 
     #[target_feature(enable = "avx2")]
     pub(super) unsafe fn add_scaled_diff(g: &mut [f64], ri: &[f64], rj: &[f64], tl: f64) {
@@ -185,7 +256,7 @@ mod avx2 {
     }
 
     #[target_feature(enable = "avx2")]
-    pub(super) unsafe fn may_improve(c: &Candidates, best: f64, b: &Block) -> bool {
+    pub(super) unsafe fn survivors(c: &Candidates, best: f64, b: &Block) -> u64 {
         let n = b.g.len();
         let zero = _mm256_setzero_pd();
         let two = _mm256_set1_pd(2.0);
@@ -218,9 +289,10 @@ mod avx2 {
                 lim,
             )
         };
-        let mut acc = zero;
+        let mut mask = 0u64;
         let mut k = 0;
         while k + W <= n {
+            let mut acc = zero;
             let gv = _mm256_loadu_pd(b.g.as_ptr().add(k));
             let cd = _mm256_loadu_pd(b.cdiag.as_ptr().add(k));
             let ru = _mm256_loadu_pd(b.room_up.as_ptr().add(k));
@@ -239,13 +311,105 @@ mod avx2 {
                     test(rd, _mm256_sub_pd(gv, gj1), eta, _mm256_min_pd(rd, room_j)),
                 );
             }
+            mask |= (_mm256_movemask_pd(acc) as u64) << k;
             k += W;
         }
-        let mut any = _mm256_movemask_pd(acc) != 0;
         while k < n {
-            any |= c.test_up(best, b, k) | (c.two_sided & c.test_down(best, b, k));
+            let hit = c.test_up(best, b, k) | (c.two_sided & c.test_down(best, b, k));
+            mask |= u64::from(hit) << k;
             k += 1;
         }
-        any
+        mask
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        }
+
+        fn index(&mut self, n: usize) -> usize {
+            ((self.next() + 1.0) * 0.5 * n as f64) as usize % n
+        }
+    }
+
+    #[test]
+    fn sq_dist_matches_scalar_bitwise() {
+        let mut rng = Rng(1);
+        for dim in [1, 2, 3, 7, 10] {
+            let n = 37;
+            let data: Vec<f64> = (0..n * dim).map(|_| 3.0 * rng.next()).collect();
+            let x: Vec<f64> = (0..dim).map(|_| 3.0 * rng.next()).collect();
+            for len in [0, 1, 3, 4, 5, 8, 31, 64] {
+                let cols: Vec<usize> = (0..len).map(|_| rng.index(n)).collect();
+                let (mut a, mut b) = (vec![0.0; len], vec![0.0; len]);
+                sq_dist_to_samples(&data, dim, &x, &cols, &mut a);
+                sq_dist_scalar(&data, dim, &x, &cols, &mut b);
+                let bits = |v: &[f64]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a), bits(&b), "dim {dim} len {len}");
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn sq_dist_rejects_column_out_of_range() {
+        let data = [0.0; 6];
+        let mut out = [0.0; 4];
+        sq_dist_to_samples(&data, 2, &[0.0, 0.0], &[0, 1, 2, 3], &mut out);
+    }
+
+    #[test]
+    fn survivors_match_scalar() {
+        let mut rng = Rng(7);
+        for round in 0..400 {
+            let n = [1, 3, 4, 5, 17, 63, 64][round % 7];
+            let mut vec_of = |f: &mut dyn FnMut(&mut Rng) -> f64| -> Vec<f64> {
+                (0..n).map(|_| f(&mut rng)).collect()
+            };
+            // coarse grids produce ties and exact zeros
+            let g = vec_of(&mut |r| (r.next() * 4.0).round() / 4.0);
+            let cdiag = vec_of(&mut |r| 1.0 + (r.next() * 2.0).round() / 4.0);
+            let row_i = vec_of(&mut |r| r.next());
+            let row_j = vec_of(&mut |r| r.next());
+            let room_down = vec_of(&mut |r| (r.next().max(-0.3) * 2.0).max(0.0));
+            let room_up = vec_of(&mut |r| (r.next().max(-0.3) * 2.0).max(0.0));
+            let block = Block {
+                g: &g,
+                cdiag: &cdiag,
+                row_i: &row_i,
+                row_j: &row_j,
+                room_down: &room_down,
+                room_up: &room_up,
+            };
+            let cand = Candidates {
+                gi0: rng.next(),
+                gj1: rng.next(),
+                ci: 1.0,
+                cj: 1.0,
+                two_inv_lambda: 2.0 * (1.0 + rng.next().abs()),
+                room_i: rng.next().abs(),
+                room_j: rng.next().abs(),
+                unbounded: round % 3 == 0,
+                two_sided: round % 5 != 0,
+            };
+            for best in [f64::NEG_INFINITY, 0.0, 0.01, 0.2, 1.0] {
+                assert_eq!(
+                    cand.survivors(best, &block),
+                    cand.survivors_scalar(best, &block),
+                    "round {round} best {best}"
+                );
+            }
+        }
     }
 }

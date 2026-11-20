@@ -13,6 +13,14 @@ struct Slot {
     row: Vec<f64>,
 }
 
+/// Distinct columns of the active set; `map[p]` is the index in `cols` of column `p`.
+///
+/// `cols` is empty if all columns are distinct (no mapping is needed then).
+struct Dedup {
+    cols: Vec<usize>,
+    map: Vec<u32>,
+}
+
 /// LRU cache of kernel rows.
 ///
 /// Rows are keyed by *kernel* index and contain the entries `K[key, cols[p]]` for the
@@ -30,6 +38,10 @@ pub(crate) struct RowCache {
     cols: Vec<usize>,
     /// `history[e]`: the columns (of the layout after `e` restrictions) kept by restriction `e`
     history: Vec<Vec<u32>>,
+    /// Lazily computed duplicate structure of `cols` (invalidated whenever `cols` changes).
+    dedup: Option<Dedup>,
+    /// Scratch buffer for the entries of the distinct columns.
+    scratch: Vec<f64>,
     pub(crate) hits: u64,
     pub(crate) misses: u64,
 }
@@ -46,6 +58,8 @@ impl RowCache {
             capacity: capacity.max(2),
             cols,
             history: Vec::new(),
+            dedup: None,
+            scratch: Vec::new(),
             hits: 0,
             misses: 0,
         }
@@ -118,10 +132,47 @@ impl RowCache {
             self.slots[s].row.resize(self.cols.len(), 0.0);
             s
         };
-        kernel.row_into(key, &self.cols, &mut self.slots[s].row);
+        self.compute_row(kernel, key, s);
         self.lookup[key] = s;
         self.push_front(s);
         s
+    }
+
+    /// Finds the distinct columns (a kernel index may be used by several variables, e.g. the two
+    /// copies of an ε-SVR sample) so that each kernel entry is evaluated only once.
+    fn build_dedup(&self) -> Dedup {
+        let mut first = vec![u32::MAX; self.lookup.len()];
+        let mut cols = Vec::new();
+        let mut map = Vec::with_capacity(self.cols.len());
+        for &c in &self.cols {
+            if first[c] == u32::MAX {
+                first[c] = cols.len() as u32;
+                cols.push(c);
+            }
+            map.push(first[c]);
+        }
+        if cols.len() == self.cols.len() {
+            cols.clear();
+            map.clear();
+        }
+        Dedup { cols, map }
+    }
+
+    /// Computes the row of `key` into slot `s`.
+    fn compute_row<K: Kernel + ?Sized>(&mut self, kernel: &K, key: usize, s: usize) {
+        if self.dedup.is_none() {
+            self.dedup = Some(self.build_dedup());
+        }
+        let dedup = self.dedup.as_ref().expect("computed above");
+        if dedup.map.is_empty() {
+            kernel.row_into(key, &self.cols, &mut self.slots[s].row);
+        } else {
+            self.scratch.resize(dedup.cols.len(), 0.0);
+            kernel.row_into(key, &dedup.cols, &mut self.scratch);
+            for (o, &u) in self.slots[s].row.iter_mut().zip(&dedup.map) {
+                *o = self.scratch[u as usize];
+            }
+        }
     }
 
     /// Applies the restrictions that happened since the row in slot `s` was last used.
@@ -152,6 +203,7 @@ impl RowCache {
             self.cols[w] = self.cols[p as usize];
         }
         self.cols.truncate(kept.len());
+        self.dedup = None;
         self.history.push(kept);
     }
 
@@ -165,6 +217,7 @@ impl RowCache {
         self.head = NIL;
         self.tail = NIL;
         self.cols = cols;
+        self.dedup = None;
     }
 }
 
@@ -211,5 +264,32 @@ mod tests {
         let s = c.ensure(&k, 0);
         assert_eq!(c.row(s), &[2.0, 1.0]);
         assert_eq!(c.misses, 3);
+    }
+
+    #[test]
+    fn duplicate_columns_are_evaluated_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Counting<'a>(PrecomputedKernel<'a>, AtomicUsize);
+        impl Kernel for Counting<'_> {
+            fn len(&self) -> usize {
+                self.0.len()
+            }
+            fn eval(&self, i: usize, j: usize) -> f64 {
+                self.1.fetch_add(1, Ordering::Relaxed);
+                self.0.eval(i, j)
+            }
+        }
+        let m = matrix(3);
+        let k = Counting(PrecomputedKernel::new(&m, 3), AtomicUsize::new(0));
+        let mut c = RowCache::new(3, vec![0, 1, 2, 2, 1, 0], 10);
+        let s = c.ensure(&k, 1);
+        assert_eq!(c.row(s), &[3.0, 4.0, 5.0, 5.0, 4.0, 3.0]);
+        assert_eq!(k.1.load(Ordering::Relaxed), 3);
+        c.restrict(&[true, true, false, true, false, false]);
+        let s = c.ensure(&k, 2);
+        assert_eq!(c.row(s), &[6.0, 7.0, 8.0]);
+        assert_eq!(k.1.load(Ordering::Relaxed), 6);
+        let s = c.ensure(&k, 1);
+        assert_eq!(c.row(s), &[3.0, 4.0, 5.0]);
     }
 }

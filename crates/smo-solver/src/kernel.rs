@@ -7,6 +7,8 @@
 //!   that is *borrowed* (e.g. directly from a NumPy array, without copying),
 //! * [`PrecomputedKernel`] wraps an explicitly given square matrix.
 
+use crate::simd;
+
 /// Access to a (symmetric, positive semi-definite) kernel matrix of size `len() × len()`.
 pub trait Kernel: Sync {
     /// Number of samples, i.e. the size of the kernel matrix.
@@ -27,24 +29,33 @@ pub trait Kernel: Sync {
 
     /// Writes `K[i, cols[p]]` into `out[p]` for all `p`.
     fn row_into(&self, i: usize, cols: &[usize], out: &mut [f64]) {
-        debug_assert_eq!(cols.len(), out.len());
-        #[cfg(feature = "parallel")]
-        if cols.len() >= PARALLEL_THRESHOLD {
-            use rayon::prelude::*;
-            out.par_iter_mut()
-                .zip(cols.par_iter())
-                .for_each(|(o, &j)| *o = self.eval(i, j));
-            return;
-        }
-        for (o, &j) in out.iter_mut().zip(cols) {
-            *o = self.eval(i, j);
-        }
+        generic_row_into(self, i, cols, out);
+    }
+}
+
+/// Entry-wise implementation of [`Kernel::row_into`].
+fn generic_row_into<K: Kernel + ?Sized>(kernel: &K, i: usize, cols: &[usize], out: &mut [f64]) {
+    debug_assert_eq!(cols.len(), out.len());
+    #[cfg(feature = "parallel")]
+    if cols.len() >= PARALLEL_THRESHOLD {
+        use rayon::prelude::*;
+        out.par_iter_mut()
+            .zip(cols.par_iter())
+            .for_each(|(o, &j)| *o = kernel.eval(i, j));
+        return;
+    }
+    for (o, &j) in out.iter_mut().zip(cols) {
+        *o = kernel.eval(i, j);
     }
 }
 
 /// Rows longer than this are computed in parallel (feature `parallel`).
 #[cfg(feature = "parallel")]
 const PARALLEL_THRESHOLD: usize = 4096;
+
+/// Chunk size of the parallel row computation of [`FeatureKernel`].
+#[cfg(feature = "parallel")]
+const PARALLEL_CHUNK: usize = 512;
 
 /// A kernel function `k(x, z)` acting on feature vectors.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,6 +151,29 @@ impl Kernel for FeatureKernel<'_> {
             _ => self.eval(i, i),
         }
     }
+
+    fn row_into(&self, i: usize, cols: &[usize], out: &mut [f64]) {
+        let KernelFunction::Rbf { gamma } = self.function else {
+            return generic_row_into(self, i, cols, out);
+        };
+        assert_eq!(cols.len(), out.len());
+        let x = self.sample(i);
+        let block = |cols: &[usize], out: &mut [f64]| {
+            simd::sq_dist_to_samples(self.data, self.dim, x, cols, out);
+            for o in out.iter_mut() {
+                *o = (-gamma * *o).exp();
+            }
+        };
+        #[cfg(feature = "parallel")]
+        if cols.len() >= PARALLEL_THRESHOLD {
+            use rayon::prelude::*;
+            out.par_chunks_mut(PARALLEL_CHUNK)
+                .zip(cols.par_chunks(PARALLEL_CHUNK))
+                .for_each(|(o, c)| block(c, o));
+            return;
+        }
+        block(cols, out);
+    }
 }
 
 /// Explicitly given (row-major, square) kernel matrix.
@@ -227,5 +261,24 @@ mod tests {
         let pk = PrecomputedKernel::new(&km, 10);
         pk.row_into(2, &cols, &mut out);
         assert_eq!(out, [29.0, 20.0, 24.0, 24.0]);
+    }
+
+    #[test]
+    fn rbf_row_into_matches_eval_bitwise() {
+        let dim = 10;
+        let n = 9000;
+        let x: Vec<f64> = (0..n * dim)
+            .map(|v| (v as f64 * 0.37).sin() * 2.0)
+            .collect();
+        let k = FeatureKernel::new(&x, dim, KernelFunction::Rbf { gamma: 0.1 });
+        // short (sequential) and long (parallel chunks) rows with repeated columns
+        for len in [0, 5, 100, 5000, 9000] {
+            let cols: Vec<usize> = (0..len).map(|p| (p * 7919 + 3) % n).collect();
+            let mut out = vec![0.0; len];
+            k.row_into(11, &cols, &mut out);
+            for (p, &j) in cols.iter().enumerate() {
+                assert_eq!(out[p].to_bits(), k.eval(11, j).to_bits());
+            }
+        }
     }
 }

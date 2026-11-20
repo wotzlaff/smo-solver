@@ -593,10 +593,10 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
                 room_down: &room_down[start..end],
                 room_up: &room_up[start..end],
             };
-            if !cand.may_improve(best.0, &block) {
-                continue;
-            }
-            for pos in start..end {
+            let mut bits = cand.survivors(best.0, &block);
+            while bits != 0 {
+                let pos = start + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
                 let a = alpha[pos];
                 let gv = g[pos];
                 // partner j = pos for fixed i0
@@ -1107,16 +1107,31 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             .map(|(k, &b)| (k, b * self.inv_lambda))
             .collect();
         let kernel = self.kernel;
-        let compute =
-            |m: usize| -> f64 { support.iter().map(|&(k, b)| b * kernel.eval(m, k)).sum() };
+        let support_cols: Vec<usize> = support.iter().map(|&(k, _)| k).collect();
+        // row of the kernel restricted to the support, so that it can be computed in blocks
+        let compute = |row: &mut Vec<f64>, m: usize| -> f64 {
+            row.resize(support_cols.len(), 0.0);
+            kernel.row_into(m, &support_cols, row);
+            support
+                .iter()
+                .zip(row.iter())
+                .map(|(&(_, b), &e)| b * e)
+                .sum()
+        };
         let n_samples = beta.len();
         #[cfg(feature = "parallel")]
         let kam: Vec<f64> = {
             use rayon::prelude::*;
-            (0..n_samples).into_par_iter().map(compute).collect()
+            (0..n_samples)
+                .into_par_iter()
+                .map_init(Vec::new, |row, m| compute(row, m))
+                .collect()
         };
         #[cfg(not(feature = "parallel"))]
-        let kam: Vec<f64> = (0..n_samples).map(compute).collect();
+        let kam: Vec<f64> = {
+            let mut row = Vec::new();
+            (0..n_samples).map(|m| compute(&mut row, m)).collect()
+        };
         self.kidx.iter().map(|&k| kam[k]).collect()
     }
 

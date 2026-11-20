@@ -48,4 +48,14 @@ fn main() {
         "{task} n={n}: {:.3}s steps={} hits={} misses={} gap={:.2e}",
         r.elapsed, r.steps, r.cache_hits, r.cache_misses, r.gap
     );
+    // bit-exact fingerprint of the result, to compare runs
+    let ka_hash = r.ka.iter().fold(0u64, |h, v| {
+        (h ^ v.to_bits()).wrapping_mul(0x100000001b3).rotate_left(7)
+    });
+    println!(
+        "dual={:e} primal={:e} dual_bits={:016x} ka_hash={ka_hash:016x}",
+        r.dual_objective,
+        r.primal_objective,
+        r.dual_objective.to_bits()
+    );
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+- Performance (results bit-identical): kernel rows evaluate each distinct column only once (the two
+  copies of an ε-SVR sample shared one evaluation per row entry before), RBF squared distances are
+  computed four columns at a time with AVX2 (run-time detected, scalar fallback), `compute_ka` uses the
+  blocked row computation, and the second-order pair search visits only the candidates that pass the
+  vectorised division-free pre-filter.
+
 ## 0.2.0 – 2026-11-17
 
 ### Added
