@@ -3,6 +3,12 @@ use serde_json::Value;
 
 const FIXTURE: &str = include_str!("../tests/cv_fixture.json");
 
+/// The exports share global state (model slot, warm starts): run the tests one at a time.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn floats(v: &Value) -> Vec<f64> {
     v.as_array()
         .unwrap()
@@ -65,7 +71,7 @@ fn random_data(kind: u32, n: usize, k: usize, smoothing: f64) -> Data {
     for i in 0..n {
         let (a, b) = (rng.next() * 2.0 - 1.0, rng.next() * 2.0 - 1.0);
         x.extend([a, b]);
-        y.push(if kind == 0 {
+        y.push(if kind != 1 {
             // noisy circle, so that both classes appear in every fold
             if a * a + b * b + 0.2 * (rng.next() - 0.5) < 0.4 {
                 1.0
@@ -95,6 +101,7 @@ fn rel(a: f64, b: f64) -> f64 {
 
 #[test]
 fn matches_python_reference() {
+    let _serial = serial();
     let cases: Value = serde_json::from_str(FIXTURE).unwrap();
     for case in cases.as_array().unwrap() {
         let data = Data {
@@ -111,7 +118,8 @@ fn matches_python_reference() {
         for pt in case["points"].as_array().unwrap() {
             let get = |k: &str| pt[k].as_f64().unwrap();
             let start = std::time::Instant::now();
-            let out = data.cv(get("log_lambda"), get("log_gamma"), 1e-8);
+            let tol = if data.kind == 2 { 1e-10 } else { 1e-8 };
+            let out = data.cv(get("log_lambda"), get("log_gamma"), tol);
             println!(
                 "  cv_objective took {:.1} ms",
                 start.elapsed().as_secs_f64() * 1e3
@@ -128,6 +136,42 @@ fn matches_python_reference() {
                 case["name"]
             );
         }
+        if let Some(fits) = case.get("fits") {
+            let test = floats(&case["test_points"]);
+            let m = test.len() / data.dim;
+            for fit in fits.as_array().unwrap() {
+                let get = |k: &str| fit[k].as_f64().unwrap();
+                let lam = get("log_lambda").exp();
+                let gamma = get("log_gamma").exp();
+                let n = data.y.len();
+                let steps = unsafe {
+                    train(
+                        data.x.as_ptr(),
+                        n,
+                        data.dim,
+                        data.y.as_ptr(),
+                        2,
+                        lam,
+                        gamma,
+                        0.0,
+                        0.0,
+                        1e-10,
+                    )
+                };
+                assert!(steps > 0, "train failed: {steps}");
+                let mut dec = vec![0.0; m];
+                unsafe { decision(test.as_ptr(), m, dec.as_mut_ptr()) };
+                let want = floats(&fit["decision"]);
+                let e = dec
+                    .iter()
+                    .zip(&want)
+                    .map(|(&a, &b)| rel(a, b))
+                    .fold(rel(stat(0), get("bias")), f64::max);
+                println!("  train: {steps} Newton steps, max rel. error {e:.2e}");
+                assert!(e <= 1e-5, "{}: train {e}", case["name"]);
+                worst = worst.max(e);
+            }
+        }
         println!("oracle {}: max rel. error {worst:.2e}", case["name"]);
     }
 }
@@ -140,7 +184,7 @@ fn check_gradient(kind: u32, smoothing: f64, ll: f64, lg: f64) {
     let fd_l = (data.cv(ll + h, lg, tol)[0] - data.cv(ll - h, lg, tol)[0]) / (2.0 * h);
     let fd_g = (data.cv(ll, lg + h, tol)[0] - data.cv(ll, lg - h, tol)[0]) / (2.0 * h);
     println!("kind {kind} delta {smoothing}: {out:?} fd ({fd_l}, {fd_g})");
-    if smoothing > 0.0 {
+    if smoothing > 0.0 || kind == 2 {
         let scale = out[1].abs().max(out[2].abs()).max(1e-3);
         assert!(
             (out[1] - fd_l).abs() <= 1e-4 * scale,
@@ -160,16 +204,20 @@ fn check_gradient(kind: u32, smoothing: f64, ll: f64, lg: f64) {
 
 #[test]
 fn gradient_matches_finite_differences() {
+    let _serial = serial();
     check_gradient(0, 0.3, -1.0, 0.0);
     check_gradient(0, 0.3, -2.5, 0.8);
     check_gradient(1, 0.2, -3.0, 0.5);
     check_gradient(1, 0.2, -2.0, -0.5);
+    check_gradient(2, 0.0, -1.0, 0.0);
+    check_gradient(2, 0.0, -3.0, 0.8);
     check_gradient(0, 0.0, -1.0, 0.0);
     check_gradient(1, 0.0, -3.0, 0.5);
 }
 
 #[test]
 fn invalid_input_is_reported() {
+    let _serial = serial();
     let data = random_data(0, 12, 3, 0.3);
     let mut out = [0.0; 3];
     let call = |kind: u32, k: usize, lg: f64, out: &mut [f64; 3]| unsafe {
@@ -198,6 +246,7 @@ fn invalid_input_is_reported() {
 
 #[test]
 fn trace_is_monotone_and_ends_at_the_final_model() {
+    let _serial = serial();
     for kind in [0u32, 1] {
         let data = random_data(kind, 80, 4, 0.2);
         let n = data.y.len();
@@ -246,5 +295,178 @@ fn trace_is_monotone_and_ends_at_the_final_model() {
         assert_eq!(buf[3], stat(0));
         assert_eq!(buf[1], stat(1));
         assert_eq!(unsafe { trace_frame(len, buf.as_mut_ptr()) }, -1);
+    }
+}
+
+#[test]
+fn logistic_newton_satisfies_the_optimality_conditions() {
+    let _serial = serial();
+    for (n, lam, gamma) in [(60usize, 0.1, 2.0), (120, 1e-3, 5.0), (80, 10.0, 0.5)] {
+        let data = random_data(2, n, 3, 0.0);
+        let start = std::time::Instant::now();
+        let steps = unsafe {
+            train(
+                data.x.as_ptr(),
+                n,
+                2,
+                data.y.as_ptr(),
+                2,
+                lam,
+                gamma,
+                0.0,
+                0.0,
+                1e-10,
+            )
+        };
+        println!(
+            "n={n} lam={lam}: {steps} Newton steps, {:.2} ms",
+            start.elapsed().as_secs_f64() * 1e3
+        );
+        assert!(steps > 0 && steps < 100);
+        assert!(stat(1) < 1e-10 && stat(1) == stat(4));
+        // KKT: a_i = y_i sigma(-y_i f_i) with a = lam * coef, and sum(a) = 0
+        let mut dec = vec![0.0; n];
+        unsafe { decision(data.x.as_ptr(), n, dec.as_mut_ptr()) };
+        let k = unsafe { support(std::ptr::null_mut()) } as usize;
+        let mut idx = vec![0.0; k];
+        unsafe { support(idx.as_mut_ptr()) };
+        assert_eq!(k, n);
+        for (i, f) in dec.iter().enumerate() {
+            let want = data.y[i] / (1.0 + (data.y[i] * f).exp());
+            let guard = lock(&STATE);
+            let coef = guard.as_ref().unwrap().model.coef[i];
+            assert!((lam * coef - want).abs() < 1e-9, "{} vs {want}", lam * coef);
+        }
+        let guard = lock(&STATE);
+        let sum: f64 = guard.as_ref().unwrap().model.coef.iter().sum::<f64>() * lam;
+        assert!(sum.abs() < 1e-9);
+    }
+}
+
+#[test]
+fn logistic_rejects_bad_labels_and_parameters() {
+    let _serial = serial();
+    let data = random_data(2, 20, 2, 0.0);
+    let mut y = data.y.clone();
+    y[3] = 0.5;
+    let call = |y: &[f64], lam: f64| unsafe {
+        train(
+            data.x.as_ptr(),
+            20,
+            2,
+            y.as_ptr(),
+            2,
+            lam,
+            1.0,
+            0.0,
+            0.0,
+            1e-8,
+        )
+    };
+    assert_eq!(call(&y, 0.1), -3);
+    assert_eq!(call(&data.y, -1.0), -3);
+    assert!(call(&data.y, 0.1) > 0);
+}
+
+#[test]
+fn logistic_trace_is_monotone_and_ends_at_the_final_model() {
+    let _serial = serial();
+    let data = random_data(2, 80, 4, 0.0);
+    let n = 80;
+    let steps = unsafe {
+        train_trace(
+            data.x.as_ptr(),
+            n,
+            2,
+            data.y.as_ptr(),
+            2,
+            0.05,
+            2.0,
+            0.0,
+            0.0,
+            1e-10,
+            1,
+            1000,
+        )
+    };
+    assert!(steps >= 3);
+    let len = trace_len() as usize;
+    assert_eq!(len as i64, steps + 1); // period 1: every iteration plus the start
+    let mut buf = vec![0.0; 4 + n];
+    let (mut last_step, mut last_gap) = (-1.0, f64::INFINITY);
+    for i in 0..len {
+        assert_eq!(unsafe { trace_frame(i, buf.as_mut_ptr()) }, 4 + n as i64);
+        assert!(buf[0] > last_step, "steps must increase");
+        // the optimality norm of damped Newton need not drop every step, but must end tiny
+        last_step = buf[0];
+        last_gap = buf[1];
+    }
+    assert_eq!(last_step, steps as f64);
+    assert!(last_gap < 1e-10);
+    // decision values of the last frame match the global model
+    let pts = [0.1, -0.3, 0.7, 0.2, -0.9, 0.5];
+    let (mut a, mut b) = ([0.0; 3], [0.0; 3]);
+    unsafe {
+        assert_eq!(decision(pts.as_ptr(), 3, a.as_mut_ptr()), 0);
+        assert_eq!(trace_decision(len - 1, pts.as_ptr(), 3, b.as_mut_ptr()), 0);
+    }
+    for (u, v) in a.iter().zip(&b) {
+        assert!((u - v).abs() < 1e-12);
+    }
+    assert_eq!(buf[3], stat(0));
+    // sparse recording keeps the first frame and always the final one
+    let s2 = unsafe {
+        train_trace(
+            data.x.as_ptr(),
+            n,
+            2,
+            data.y.as_ptr(),
+            2,
+            0.05,
+            2.0,
+            0.0,
+            0.0,
+            1e-10,
+            2,
+            1000,
+        )
+    };
+    assert_eq!(s2, steps);
+    let len2 = trace_len() as usize;
+    unsafe { trace_frame(len2 - 1, buf.as_mut_ptr()) };
+    assert_eq!(buf[0], steps as f64);
+}
+
+#[test]
+fn logistic_timings() {
+    let _serial = serial();
+    for n in [120usize, 300] {
+        let data = random_data(2, n, 4, 0.0);
+        let t = std::time::Instant::now();
+        let steps = unsafe {
+            train(
+                data.x.as_ptr(),
+                n,
+                2,
+                data.y.as_ptr(),
+                2,
+                0.05,
+                2.0,
+                0.0,
+                0.0,
+                1e-8,
+            )
+        };
+        let t_train = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        let out = data.cv(-3.0, 0.7, 1e-8);
+        let t_cv = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        data.cv(-3.0, 0.72, 1e-8);
+        println!(
+            "n={n}: train {t_train:.1} ms ({steps} steps), cv cold {t_cv:.1} ms, warm {:.1} ms, value {}",
+            t.elapsed().as_secs_f64() * 1e3,
+            out[0]
+        );
     }
 }

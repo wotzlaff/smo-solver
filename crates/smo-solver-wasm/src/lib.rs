@@ -5,6 +5,8 @@
 //! The model is kept in a global slot (the demo trains one model at a time).
 
 mod cv;
+mod linalg;
+mod logistic;
 mod trace;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -12,10 +14,47 @@ use std::sync::{Mutex, MutexGuard};
 
 use smo_solver::{solve, DualProblem, FeatureKernel, KernelFunction, Model, SmoOptions, SmoResult};
 
+/// The model of the last [`train`] call with the statistics reported by [`stat`]
+/// (`[bias, gap, objective, seconds, violation]`).
 struct Trained {
     model: Model,
-    result: SmoResult,
+    stats: [f64; 5],
 }
+
+impl Trained {
+    fn smo(model: Model, r: &SmoResult) -> Self {
+        Self {
+            model,
+            stats: [r.b, r.gap, r.dual_objective, r.elapsed, r.violation],
+        }
+    }
+
+    fn newton(model: Model, fit: &logistic::Fit, seconds: f64) -> Self {
+        Self {
+            model,
+            stats: [fit.b, fit.residual, fit.objective, seconds, fit.residual],
+        }
+    }
+}
+
+/// Wall-clock seconds since `start` (zero on wasm32 where `std::time` is unavailable).
+#[cfg(not(target_arch = "wasm32"))]
+fn seconds_since(start: std::time::Instant) -> f64 {
+    start.elapsed().as_secs_f64()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn seconds_since(_: ()) -> f64 {
+    0.0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now() {}
 
 static STATE: Mutex<Option<Trained>> = Mutex::new(None);
 static WARM: Mutex<Option<cv::WarmStart>> = Mutex::new(None);
@@ -46,8 +85,18 @@ pub unsafe extern "C" fn dealloc(ptr: *mut f64, len: usize) {
 
 /// Trains a model on `n` samples with `dim` features (row-major `x`) and targets `y`.
 ///
-/// `kind = 0`: classification (labels ±1), `kind = 1`: ε-regression.
-/// Returns the number of SMO steps, or a negative value on invalid input.
+/// `kind = 0`: classification (labels ±1), `kind = 1`: ε-regression, `kind = 2`: kernel logistic
+/// regression (labels ±1, Strasdat Sec. 4.1.3) trained by a dense damped Newton method.
+/// Returns the number of SMO steps (Newton iterations for `kind = 2`), or a negative value on
+/// invalid input (`-2` unknown kind, `-3` invalid problem or labels, `-4` solver failure).
+///
+/// For `kind = 2` the regularisation is the same as for the SVM (`λ/2 |w|² + Σ log(1 + e^{-y f})`),
+/// `smoothing` and `epsilon` are ignored and `tol` is the stopping tolerance on the optimality
+/// norm `sqrt(mean((a + φ')²) + (Σ φ')²)` (use about `1e-8`); at most 100 iterations. The model
+/// in the global slot has all samples with nonzero coefficient as [`support`] (generically all
+/// of them). [`decision`] returns the logit `f`; the class probability of `+1` is `σ(f)` =
+/// `1 / (1 + e^{-f})`. [`stat`]: 1 = final optimality norm (in place of the duality gap),
+/// 2 = primal objective, 4 = optimality norm, 3 = seconds (0 in WebAssembly).
 ///
 /// # Safety
 /// `x` must point to `n * dim` and `y` to `n` valid `f64` values.
@@ -70,6 +119,9 @@ pub unsafe extern "C" fn train(
     }
     let x = std::slice::from_raw_parts(x, n * dim);
     let y = std::slice::from_raw_parts(y, n);
+    if kind == 2 {
+        return train_logistic(x, dim, y, lambda, gamma, tol, None);
+    }
     let problem = match kind {
         0 => DualProblem::classification(y, lambda, None, 1.0, smoothing, None),
         1 => DualProblem::regression(y, lambda, None, epsilon, smoothing, None),
@@ -88,8 +140,36 @@ pub unsafe extern "C" fn train(
     };
     let model = Model::new(function, x, dim, &problem, &result);
     let steps = result.steps as i64;
-    *STATE.lock().unwrap() = Some(Trained { model, result });
+    *lock(&STATE) = Some(Trained::smo(model, &result));
     steps
+}
+
+/// Newton training for `kind = 2`; with `record = Some((period, max_frames))` also fills the trace.
+fn train_logistic(
+    x: &[f64],
+    dim: usize,
+    y: &[f64],
+    lambda: f64,
+    gamma: f64,
+    tol: f64,
+    record: Option<(u64, usize)>,
+) -> i64 {
+    let positive = |v: f64| v.is_finite() && v > 0.0;
+    if !(positive(lambda) && positive(gamma) && positive(tol)) || !logistic::valid_labels(y) {
+        return -3;
+    }
+    let start = now();
+    let run = catch_unwind(AssertUnwindSafe(|| {
+        logistic::train(x, dim, y, lambda, gamma, tol, record)
+    }));
+    let Ok(Ok((fit, trace))) = run else { return -4 };
+    let function = KernelFunction::Rbf { gamma };
+    let model = logistic::model(function, x, dim, lambda, &fit);
+    if trace.is_some() {
+        *lock(&TRACE) = trace;
+    }
+    *lock(&STATE) = Some(Trained::newton(model, &fit, seconds_since(start)));
+    fit.steps as i64
 }
 
 /// Evaluates the decision function at `m` points (row-major, same dimension) into `out`.
@@ -98,7 +178,7 @@ pub unsafe extern "C" fn train(
 /// `points` must point to `m * dim` and `out` to `m` valid `f64` values.
 #[no_mangle]
 pub unsafe extern "C" fn decision(points: *const f64, m: usize, out: *mut f64) -> i32 {
-    let guard = STATE.lock().unwrap();
+    let guard = lock(&STATE);
     let Some(trained) = guard.as_ref() else {
         return -1;
     };
@@ -118,7 +198,7 @@ pub unsafe extern "C" fn decision(points: *const f64, m: usize, out: *mut f64) -
 /// `out` must be null or point to at least `n_support` valid `f64` values.
 #[no_mangle]
 pub unsafe extern "C" fn support(out: *mut f64) -> i64 {
-    let guard = STATE.lock().unwrap();
+    let guard = lock(&STATE);
     let Some(trained) = guard.as_ref() else {
         return -1;
     };
@@ -133,21 +213,14 @@ pub unsafe extern "C" fn support(out: *mut f64) -> i64 {
 }
 
 /// Statistics of the last run: 0 = bias, 1 = duality gap, 2 = dual objective, 3 = seconds,
-/// 4 = final violation.
+/// 4 = final violation (see [`train`] for `kind = 2`).
 #[no_mangle]
 pub extern "C" fn stat(which: u32) -> f64 {
-    let guard = STATE.lock().unwrap();
+    let guard = lock(&STATE);
     let Some(t) = guard.as_ref() else {
         return f64::NAN;
     };
-    match which {
-        0 => t.result.b,
-        1 => t.result.gap,
-        2 => t.result.dual_objective,
-        3 => t.result.elapsed,
-        4 => t.result.violation,
-        _ => f64::NAN,
-    }
+    t.stats.get(which as usize).copied().unwrap_or(f64::NAN)
 }
 
 /// Cross-validation objective and its exact hypergradient for an RBF-kernel SVM.
@@ -168,6 +241,12 @@ pub extern "C" fn stat(which: u32) -> f64 {
 /// Dual variables of the last call are kept as warm start while `y`, `fold_of` and `kind` are
 /// unchanged. Returns 0, or a negative status: -1 invalid input, -2 unknown kind, -3 invalid
 /// problem, -4 SMO did not converge, -5 linear algebra failure or non-finite result.
+///
+/// `kind = 2` is kernel logistic regression: every fold is trained by Newton's method (`tol` =
+/// tolerance on the optimality norm, `smoothing` and `epsilon` ignored, labels must be ±1), the
+/// validation loss is `LogisticValidation()` (`Σ log(1 + e^{-y f})`) and the gradient is the exact
+/// hypergradient (adjoint system with `h = σ(1 - σ)` on all training samples). The warm start of
+/// a fold is its previous Newton solution.
 ///
 /// # Safety
 /// `x` must point to `n * dim`, `y` and `fold_of` to `n` and `out` to 3 valid `f64` values.
@@ -226,6 +305,11 @@ pub unsafe extern "C" fn cv_objective(
 /// keep working. Shrinking is disabled while recording. Returns the number of SMO steps or a
 /// negative value on invalid input (`-5`: `period = 0` or `max_frames < 2`).
 ///
+/// `kind = 2` records the Newton iteration instead: one frame at the start (`a = 0`, `b = 0`),
+/// one every `period` iterations, and the final state; a frame holds the optimality norm in the
+/// `gap` and `violation` slots (the initial violation is `NaN`) and `coef_k = a_k / λ`. Returns the
+/// number of Newton iterations.
+///
 /// # Safety
 /// `x` must point to `n * dim` and `y` to `n` valid `f64` values.
 #[no_mangle]
@@ -252,6 +336,17 @@ pub unsafe extern "C" fn train_trace(
     }
     let x = std::slice::from_raw_parts(x, n * dim);
     let y = std::slice::from_raw_parts(y, n);
+    if kind == 2 {
+        return train_logistic(
+            x,
+            dim,
+            y,
+            lambda,
+            gamma,
+            tol,
+            Some((period as u64, max_frames)),
+        );
+    }
     let problem = match kind {
         0 => DualProblem::classification(y, lambda, None, 1.0, smoothing, None),
         1 => DualProblem::regression(y, lambda, None, epsilon, smoothing, None),
@@ -266,7 +361,7 @@ pub unsafe extern "C" fn train_trace(
     };
     let steps = result.steps as i64;
     *lock(&TRACE) = Some(trace);
-    *lock(&STATE) = Some(Trained { model, result });
+    *lock(&STATE) = Some(Trained::smo(model, &result));
     steps
 }
 

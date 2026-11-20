@@ -15,8 +15,15 @@ import sys
 import numpy as np
 
 from optimized_svm import cv_error_and_gradient
-from optimized_svm.losses import EpsilonInsensitiveLoss, HingeLoss
-from optimized_svm.validation import SmoothAbsoluteValidation, SmoothHingeValidation
+from optimized_svm.kernels import rbf
+from optimized_svm.losses import EpsilonInsensitiveLoss, HingeLoss, LogisticLoss
+from optimized_svm.problem import TrainingProblem
+from optimized_svm.training import train
+from optimized_svm.validation import (
+    LogisticValidation,
+    SmoothAbsoluteValidation,
+    SmoothHingeValidation,
+)
 
 
 def moons(n, rng):
@@ -40,7 +47,10 @@ def make_cases():
     fold1 = rng.permutation(80) % 4
     reg = dict(name="sine-eps", kind=1, x=x1, y=y1, fold_of=fold1, k=4, smoothing=0.2, epsilon=0.1,
                points=[(-3.0, 0.5), (-4.5, 1.0), (-2.0, -0.5)])
-    return [clf, clf0, reg]
+    # logistic cases reuse the moons data (same generator state as above, appended last)
+    logi = dict(clf, name="moons-logistic", kind=2, smoothing=0.0,
+                points=[(-1.0, 0.0), (-3.0, 0.7), (0.5, -1.0)])
+    return [clf, clf0, reg, logi]
 
 
 def main(path):
@@ -49,7 +59,11 @@ def main(path):
         n = len(c["y"])
         folds = [(np.flatnonzero(c["fold_of"] != i), np.flatnonzero(c["fold_of"] == i))
                  for i in range(c["k"])]
-        if c["kind"] == 0:
+        newton = None
+        if c["kind"] == 2:
+            loss, val = LogisticLoss(), LogisticValidation()
+            newton = {"tol": 1e-22}
+        elif c["kind"] == 0:
             loss, val = HingeLoss(smoothing=c["smoothing"]), SmoothHingeValidation()
         else:
             loss = EpsilonInsensitiveLoss(epsilon=c["epsilon"], smoothing=c["smoothing"])
@@ -58,11 +72,25 @@ def main(path):
         for ll, lg in c["points"]:
             theta = np.array([ll, 0.5 * lg])
             res = cv_error_and_gradient(theta, c["x"], c["y"], np.ones(n), folds, loss, val,
-                                        smo_options={"tol": 1e-10})
+                                        smo_options={"tol": 1e-10}, newton_options=newton)
             pts.append(dict(log_lambda=ll, log_gamma=lg, value=float(res.error),
                             grad_log_lambda=float(res.gradient[0]),
                             grad_log_gamma=float(res.gradient[1]) / 2.0))
-        out.append(dict(name=c["name"], kind=c["kind"], dim=c["x"].shape[1],
+        extra = {}
+        if c["kind"] == 2:
+            # full-data fit with the low-level API: decision values at fixed test points
+            rng = np.random.default_rng(11)
+            test = rng.uniform(-1.5, 2.5, (6, 2)) * np.array([1.0, 0.8])
+            fits = []
+            for ll, lg in c["points"]:
+                s_ = np.exp(0.5 * lg)
+                prob = TrainingProblem(c["x"] * s_, c["y"], loss, float(np.exp(ll)))
+                sol = train(prob, newton_options=newton)
+                dec = rbf(test * s_, prob.x) @ (sol.a / prob.lam) + sol.b
+                fits.append(dict(log_lambda=ll, log_gamma=lg, bias=float(sol.b),
+                                 newton_steps=int(sol.newton_steps), decision=dec.tolist()))
+            extra = dict(test_points=test.ravel().tolist(), fits=fits)
+        out.append(dict(**extra, name=c["name"], kind=c["kind"], dim=c["x"].shape[1],
                         x=c["x"].ravel().tolist(), y=c["y"].tolist(),
                         fold_of=c["fold_of"].tolist(), k=c["k"], smoothing=c["smoothing"],
                         epsilon=c["epsilon"], points=pts))

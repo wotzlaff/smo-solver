@@ -5,6 +5,7 @@
 //! explicit part (dual variables and bias fixed) plus the adjoint bordered system on the loss
 //! terms with positive curvature `h = ℓ''`, see Strasdat, Sec. 9.2.
 
+use crate::linalg::{cholesky, cholesky_solve};
 use smo_solver::{
     solve_with, DualProblem, FeatureKernel, KernelFunction, SmoOptions, SmoResult, Status,
 };
@@ -18,7 +19,8 @@ pub const ERR_LINALG: i32 = -5;
 
 /// Hyperparameters and solver settings of one evaluation.
 pub struct Params {
-    /// 0: classification, 1: ε-regression.
+    /// 0: classification, 1: ε-regression, 2: logistic classification (Newton, `tol` is the
+    /// tolerance on the optimality norm; `smoothing` and `epsilon` are ignored).
     pub kind: u32,
     pub lambda: f64,
     pub gamma: f64,
@@ -77,54 +79,13 @@ fn validation(kind: u32, f: &[f64], y: &[f64], d_err: &mut [f64]) -> f64 {
     err
 }
 
-fn row(x: &[f64], i: usize, dim: usize) -> &[f64] {
+pub fn row(x: &[f64], i: usize, dim: usize) -> &[f64] {
     &x[i * dim..(i + 1) * dim]
 }
 
 #[inline]
-fn d2(a: &[f64], b: &[f64]) -> f64 {
+pub fn d2(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(p, q)| (p - q) * (p - q)).sum()
-}
-
-/// In-place Cholesky `Q = L Lᵀ` (lower triangle of the row-major `m × m` matrix).
-fn cholesky(q: &mut [f64], m: usize) -> bool {
-    for j in 0..m {
-        let mut s = q[j * m + j];
-        for k in 0..j {
-            s -= q[j * m + k] * q[j * m + k];
-        }
-        if s <= 0.0 || !s.is_finite() {
-            return false;
-        }
-        let l = s.sqrt();
-        q[j * m + j] = l;
-        for i in j + 1..m {
-            let mut s = q[i * m + j];
-            for k in 0..j {
-                s -= q[i * m + k] * q[j * m + k];
-            }
-            q[i * m + j] = s / l;
-        }
-    }
-    true
-}
-
-/// Solves `L Lᵀ x = b` in place.
-fn cholesky_solve(l: &[f64], m: usize, b: &mut [f64]) {
-    for i in 0..m {
-        let mut s = b[i];
-        for k in 0..i {
-            s -= l[i * m + k] * b[k];
-        }
-        b[i] = s / l[i * m + i];
-    }
-    for i in (0..m).rev() {
-        let mut s = b[i];
-        for k in i + 1..m {
-            s -= l[k * m + i] * b[k];
-        }
-        b[i] = s / l[i * m + i];
-    }
 }
 
 /// Trains one fold and returns `(Σ validation error, gradient of the sum, validation count)`
@@ -138,6 +99,9 @@ fn fold(
     p: &Params,
     alpha: &mut Vec<f64>,
 ) -> Result<(f64, [f64; 2]), i32> {
+    if p.kind == 2 {
+        return crate::logistic::fold(xt, yt, xv, yv, dim, p, alpha);
+    }
     let nt = yt.len();
     let nv = yv.len();
     let problem = if p.kind == 0 {
@@ -279,13 +243,17 @@ pub fn cv(
     out: &mut [f64; 3],
 ) -> Result<(), i32> {
     let n = y.len();
-    if p.kind > 1 || k < 2 || n < k || dim == 0 || x.len() != n * dim || fold_of.len() != n {
-        return Err(if p.kind > 1 { ERR_KIND } else { ERR_INPUT });
+    if p.kind > 2 || k < 2 || n < k || dim == 0 || x.len() != n * dim || fold_of.len() != n {
+        return Err(if p.kind > 2 { ERR_KIND } else { ERR_INPUT });
     }
     let positive = |v: f64| v.is_finite() && v > 0.0;
     if !(positive(p.lambda) && positive(p.gamma) && positive(p.tol))
-        || !(p.smoothing.is_finite() && p.smoothing >= 0.0)
-        || !(p.epsilon.is_finite() && p.epsilon >= 0.0)
+        || (p.kind < 2
+            && !(p.smoothing.is_finite()
+                && p.smoothing >= 0.0
+                && p.epsilon.is_finite()
+                && p.epsilon >= 0.0))
+        || (p.kind == 2 && crate::logistic::check_labels(y).is_err())
         || x.iter().chain(y).any(|v| !v.is_finite())
     {
         return Err(ERR_INPUT);
