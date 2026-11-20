@@ -53,9 +53,34 @@ def make_cases():
     return [clf, clf0, reg, logi]
 
 
+def make_ard_cases():
+    """ARD cases (one RBF width per feature); own generator so the cases above stay unchanged."""
+    rng = np.random.default_rng(23)
+    xm, y = moons(120, rng)
+    x = np.c_[xm, 0.5 * rng.standard_normal((120, 2))]  # 2 informative + 2 noise dims
+    fold = rng.permutation(120) % 4
+    clf = dict(name="ard-moons-hinge", kind=0, x=x, y=y, fold_of=fold, k=4, smoothing=0.3,
+               epsilon=0.0,
+               points=[(-1.0, [0.0, 0.3, -1.0, -2.0]), (-2.5, [0.7, -0.5, -3.0, 0.2]),
+                       (0.5, [-1.0, 0.5, 0.0, -0.5])])
+    xr = rng.uniform(0, 1, (100, 5))  # Friedman #1 type: 3 informative + 2 noise dims
+    yr = (10 * np.sin(np.pi * xr[:, 0] * xr[:, 1]) + 20 * (xr[:, 2] - 0.5) ** 2
+          + 0.3 * rng.standard_normal(100))
+    reg = dict(name="ard-friedman-eps", kind=1, x=xr, y=yr, fold_of=rng.permutation(100) % 4, k=4,
+               smoothing=0.2, epsilon=0.5,
+               points=[(-3.0, [0.5, 0.0, -0.5, -2.0, -3.0]), (-4.5, [1.0, 1.5, 0.3, -1.0, -2.0]),
+                       (-2.0, [-0.5, 0.2, 0.8, -3.0, 0.0])])
+    logi = dict(clf, name="ard-moons-logistic", kind=2, smoothing=0.0,
+                points=[(-1.0, [0.0, 0.3, -1.0, -2.0]), (-3.0, [0.7, -0.5, -3.0, 0.2]),
+                        (0.5, [-1.0, 0.5, 0.0, -0.5])])
+    return [clf, reg, logi]
+
+
 def main(path):
     out = []
-    for c in make_cases():
+    ard_names = {c["name"] for c in make_ard_cases()}
+    for c in make_cases() + make_ard_cases():
+        ard = c["name"] in ard_names
         n = len(c["y"])
         folds = [(np.flatnonzero(c["fold_of"] != i), np.flatnonzero(c["fold_of"] == i))
                  for i in range(c["k"])]
@@ -70,6 +95,17 @@ def main(path):
             val = SmoothAbsoluteValidation()
         pts = []
         for ll, lg in c["points"]:
+            if ard:
+                # one block per feature, theta = (log lambda, log s_1, ..., log s_d), gamma_d = s_d^2
+                lgs = np.asarray(lg, dtype=float)
+                theta = np.r_[ll, 0.5 * lgs]
+                res = cv_error_and_gradient(theta, c["x"], c["y"], np.ones(n), folds, loss, val,
+                                            blocks=[[d] for d in range(len(lgs))],
+                                            smo_options={"tol": 1e-10}, newton_options=newton)
+                pts.append(dict(log_lambda=ll, log_gammas=lgs.tolist(), value=float(res.error),
+                                grad_log_lambda=float(res.gradient[0]),
+                                grad_log_gammas=(np.asarray(res.gradient[1:]) / 2.0).tolist()))
+                continue
             theta = np.array([ll, 0.5 * lg])
             res = cv_error_and_gradient(theta, c["x"], c["y"], np.ones(n), folds, loss, val,
                                         smo_options={"tol": 1e-10}, newton_options=newton)
@@ -77,7 +113,9 @@ def main(path):
                             grad_log_lambda=float(res.gradient[0]),
                             grad_log_gamma=float(res.gradient[1]) / 2.0))
         extra = {}
-        if c["kind"] == 2:
+        if ard:
+            extra = dict(ard=True)
+        elif c["kind"] == 2:
             # full-data fit with the low-level API: decision values at fixed test points
             rng = np.random.default_rng(11)
             test = rng.uniform(-1.5, 2.5, (6, 2)) * np.array([1.0, 0.8])

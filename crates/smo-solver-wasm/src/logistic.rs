@@ -6,7 +6,7 @@
 //! decision function (the logit) is `f(x) = Σ_i a_i/λ K(x, x_i) + b`. The hypergradient is the
 //! same adjoint bordered system as for the SMO losses, here on all terms with `h = σ(1 - σ) > 0`.
 
-use crate::cv::{d2, row, Params, ERR_INPUT, ERR_LINALG, ERR_SOLVER};
+use crate::cv::{add_dgamma, d2, row, Params, ERR_INPUT, ERR_LINALG, ERR_SOLVER};
 use crate::linalg::{cholesky, cholesky_solve};
 use crate::trace::{Frame, Trace};
 use smo_solver::{KernelFunction, Model};
@@ -302,7 +302,7 @@ pub fn fold(
     dim: usize,
     p: &Params,
     warm: &mut Vec<f64>,
-) -> Result<(f64, [f64; 2]), i32> {
+) -> Result<(f64, Vec<f64>), i32> {
     let nt = yt.len();
     let nv = yv.len();
     let (lam, g) = (p.lambda, p.gamma);
@@ -326,23 +326,31 @@ pub fn fold(
     let mut ka_val = vec![0.0; nv];
     let mut d_err = vec![0.0; nv];
     let mut err = 0.0;
-    let mut grad = [0.0; 2];
+    let mut grad = vec![0.0; 1 + p.n_gamma(dim)];
     for v in 0..nv {
         let mut ka = 0.0;
-        let mut dka_g = 0.0;
+        let mut kv_j = Vec::with_capacity(sv.len());
         for &j in &sv {
-            let dd = d2(row(xv, v, dim), row(xt, j, dim));
-            let kv = (-g * dd).exp();
+            let kv = (-g * d2(row(xv, v, dim), row(xt, j, dim))).exp();
             ka += beta[j] * kv;
-            // d K / d log γ = -γ |x - z|² K
-            dka_g -= beta[j] * g * dd * kv;
+            kv_j.push(kv);
         }
         let f = ka + fit.b;
         ka_val[v] = ka;
         err += softplus(-yv[v] * f);
         d_err[v] = -yv[v] * sigmoid(-yv[v] * f);
         grad[0] -= d_err[v] * ka;
-        grad[1] += d_err[v] * dka_g;
+        for (&j, &kv) in sv.iter().zip(&kv_j) {
+            add_dgamma(
+                &mut grad,
+                d_err[v] * beta[j],
+                kv,
+                row(xv, v, dim),
+                row(xt, j, dim),
+                g,
+                p.ard,
+            );
+        }
     }
 
     // implicit part: adjoint system on the terms with positive curvature
@@ -387,8 +395,9 @@ pub fn fold(
             // d ka_P / d log λ = -ka_P
             grad[0] += ui * ka_train[i];
             for &j in &sv {
-                let dd = d2(row(xt, i, dim), row(xt, j, dim));
-                grad[1] -= ui * beta[j] * (-g * dd) * (-g * dd).exp();
+                let (a, b) = (row(xt, i, dim), row(xt, j, dim));
+                let kv = (-g * d2(a, b)).exp();
+                add_dgamma(&mut grad, -ui * beta[j], kv, a, b, g, p.ard);
             }
         }
     }

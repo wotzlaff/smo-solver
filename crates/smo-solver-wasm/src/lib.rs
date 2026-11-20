@@ -280,22 +280,113 @@ pub unsafe extern "C" fn cv_objective(
         smoothing,
         epsilon,
         tol,
+        ard: false,
     };
+    let mut res = [0.0; 3];
+    let status = cv_run(x, dim, y, fold_of, k, &params, &mut res);
+    if status == 0 {
+        std::slice::from_raw_parts_mut(out, 3).copy_from_slice(&res);
+    }
+    status
+}
+
+/// Runs [`cv::cv`] with the global warm start, converting panics into a status code.
+fn cv_run(
+    x: &[f64],
+    dim: usize,
+    y: &[f64],
+    fold_of: &[f64],
+    k: usize,
+    params: &cv::Params,
+    res: &mut [f64],
+) -> i32 {
     let run = catch_unwind(AssertUnwindSafe(|| {
         let mut slot = lock(&WARM);
         let warm = slot.get_or_insert_with(Default::default);
-        let mut res = [0.0; 3];
-        let status = cv::cv(x, dim, y, fold_of, k, &params, warm, &mut res);
-        (status, res)
+        let mut tmp = vec![0.0; res.len()];
+        let status = cv::cv(x, dim, y, fold_of, k, params, warm, &mut tmp);
+        (status, tmp)
     }));
     match run {
-        Ok((Ok(()), res)) => {
-            std::slice::from_raw_parts_mut(out, 3).copy_from_slice(&res);
+        Ok((Ok(()), tmp)) => {
+            res.copy_from_slice(&tmp);
             0
         }
         Ok((Err(code), _)) => code,
         Err(_) => cv::ERR_LINALG,
     }
+}
+
+/// Like [`cv_objective`], but with one RBF width per feature (automatic relevance
+/// determination): `K(x, z) = exp(-Σ_d γ_d (x_d - z_d)²)` with `γ_d = exp(log_gammas[d])`.
+///
+/// `log_gammas` holds `dim` values; `out` receives `2 + dim` values: the CV error, `d/d log λ`
+/// and `d/d log γ_d` for `d = 0..dim-1` (the Python reference's `d/d log s_d` with `γ_d = s_d²`
+/// is twice these). With all `γ_d` equal the value equals that of [`cv_objective`] and the
+/// width entries sum to its `d/d log γ`. Warm starts, status codes and all other arguments are as
+/// in [`cv_objective`], for `kind` 0, 1 and 2.
+///
+/// Training at given `γ_d` needs no new export: scale feature `d` of `x` by `sqrt(γ_d)` in
+/// JavaScript and call [`train`] with `gamma = 1`. (This is also how the CV is evaluated here.)
+/// Memory is `O(n²)`, time `O(n² · dim)` per fold.
+///
+/// # Safety
+/// `x` must point to `n * dim`, `y` and `fold_of` to `n`, `log_gammas` to `dim` and `out` to
+/// `2 + dim` valid `f64` values.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn cv_objective_ard(
+    x: *const f64,
+    n: usize,
+    dim: usize,
+    y: *const f64,
+    fold_of: *const f64,
+    k: usize,
+    kind: u32,
+    log_lambda: f64,
+    log_gammas: *const f64,
+    smoothing: f64,
+    epsilon: f64,
+    tol: f64,
+    out: *mut f64,
+) -> i32 {
+    if x.is_null()
+        || y.is_null()
+        || fold_of.is_null()
+        || log_gammas.is_null()
+        || out.is_null()
+        || n == 0
+        || dim == 0
+    {
+        return cv::ERR_INPUT;
+    }
+    let x = std::slice::from_raw_parts(x, n * dim);
+    let y = std::slice::from_raw_parts(y, n);
+    let fold_of = std::slice::from_raw_parts(fold_of, n);
+    let log_gammas = std::slice::from_raw_parts(log_gammas, dim);
+    let scale: Vec<f64> = log_gammas.iter().map(|l| (0.5 * l).exp()).collect();
+    if scale.iter().any(|s| !(s.is_finite() && *s > 0.0)) {
+        return cv::ERR_INPUT;
+    }
+    let xs: Vec<f64> = x
+        .chunks(dim)
+        .flat_map(|r| r.iter().zip(&scale).map(|(v, s)| v * s))
+        .collect();
+    let params = cv::Params {
+        kind,
+        lambda: log_lambda.exp(),
+        gamma: 1.0,
+        smoothing,
+        epsilon,
+        tol,
+        ard: true,
+    };
+    let mut res = vec![0.0; 2 + dim];
+    let status = cv_run(&xs, dim, y, fold_of, k, &params, &mut res);
+    if status == 0 {
+        std::slice::from_raw_parts_mut(out, 2 + dim).copy_from_slice(&res);
+    }
+    status
 }
 
 /// Like [`train`] (same arguments), but also records the SMO iteration: an initial frame

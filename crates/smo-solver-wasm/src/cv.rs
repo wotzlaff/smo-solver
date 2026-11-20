@@ -28,6 +28,34 @@ pub struct Params {
     pub smoothing: f64,
     pub epsilon: f64,
     pub tol: f64,
+    /// ARD mode: the features are already scaled by `sqrt(γ_d)` and `gamma` is 1; the gradient
+    /// then holds one entry per feature (`∂/∂log γ_d`) instead of a single one.
+    pub ard: bool,
+}
+
+impl Params {
+    /// Number of hyperparameter directions of the kernel width in the gradient.
+    pub fn n_gamma(&self, dim: usize) -> usize {
+        if self.ard {
+            dim
+        } else {
+            1
+        }
+    }
+}
+
+/// Adds `c · ∂K(a, b)/∂log γ` to the width entries `grad[1..]` of the gradient, where `kv` is
+/// `K(a, b)`: `∂K/∂log γ = -γ |a - b|² K` (isotropic) or `∂K/∂log γ_d = -(a_d - b_d)² K` on the
+/// scaled features of ARD mode (where `γ = 1`).
+#[inline]
+pub fn add_dgamma(grad: &mut [f64], c: f64, kv: f64, a: &[f64], b: &[f64], g: f64, ard: bool) {
+    if ard {
+        for ((gd, p), q) in grad[1..].iter_mut().zip(a).zip(b) {
+            *gd -= c * (p - q) * (p - q) * kv;
+        }
+    } else {
+        grad[1] -= c * g * d2(a, b) * kv;
+    }
 }
 
 /// Dual variables of the last evaluation, reused as warm start while the data layout is unchanged.
@@ -98,7 +126,7 @@ fn fold(
     dim: usize,
     p: &Params,
     alpha: &mut Vec<f64>,
-) -> Result<(f64, [f64; 2]), i32> {
+) -> Result<(f64, Vec<f64>), i32> {
     if p.kind == 2 {
         return crate::logistic::fold(xt, yt, xv, yv, dim, p, alpha);
     }
@@ -152,13 +180,13 @@ fn fold(
         f_val[v] = ka_val[v] + result.b;
     }
     let err = validation(p.kind, &f_val, yv, &mut d_err);
-    let mut grad = [0.0; 2];
+    let mut grad = vec![0.0; 1 + p.n_gamma(dim)];
     for v in 0..nv {
         grad[0] -= d_err[v] * ka_val[v];
         for &j in &sv {
-            let dd = d2(row(xv, v, dim), row(xt, j, dim));
-            // d K / d log γ = -γ |x - z|² K
-            grad[1] -= d_err[v] * beta[j] * g * dd * (-g * dd).exp();
+            let (a, b) = (row(xv, v, dim), row(xt, j, dim));
+            let kv = (-g * d2(a, b)).exp();
+            add_dgamma(&mut grad, d_err[v] * beta[j], kv, a, b, g, p.ard);
         }
     }
 
@@ -221,8 +249,9 @@ fn fold(
                 grad[0] += ui * ka_train[k];
                 // d ka_P / d log γ = (dK_{P,SV} / d log γ) β_SV
                 for &j in &sv {
-                    let dd = d2(row(xt, k, dim), row(xt, j, dim));
-                    grad[1] -= ui * beta[j] * (-g * dd) * (-g * dd).exp();
+                    let (a, b) = (row(xt, k, dim), row(xt, j, dim));
+                    let kv = (-g * d2(a, b)).exp();
+                    add_dgamma(&mut grad, -ui * beta[j], kv, a, b, g, p.ard);
                 }
             }
         }
@@ -230,7 +259,8 @@ fn fold(
     Ok((err, grad))
 }
 
-/// Cross-validation error `Σ_folds E_fold / n` and its gradient w.r.t. `(log λ, log γ)`.
+/// Cross-validation error `Σ_folds E_fold / n` and its gradient w.r.t. `(log λ, log γ)`
+/// (`out` has 3 entries) or, in ARD mode, `(log λ, log γ_1, …, log γ_dim)` (`out` has `2 + dim`).
 #[allow(clippy::too_many_arguments)]
 pub fn cv(
     x: &[f64],
@@ -240,9 +270,12 @@ pub fn cv(
     k: usize,
     p: &Params,
     warm: &mut WarmStart,
-    out: &mut [f64; 3],
+    out: &mut [f64],
 ) -> Result<(), i32> {
     let n = y.len();
+    if out.len() != 1 + 1 + p.n_gamma(dim) {
+        return Err(ERR_INPUT);
+    }
     if p.kind > 2 || k < 2 || n < k || dim == 0 || x.len() != n * dim || fold_of.len() != n {
         return Err(if p.kind > 2 { ERR_KIND } else { ERR_INPUT });
     }
@@ -273,7 +306,7 @@ pub fn cv(
             alphas: vec![Vec::new(); k],
         };
     }
-    let (mut total, mut grad) = (0.0, [0.0; 2]);
+    let (mut total, mut grad) = (0.0, vec![0.0; 1 + p.n_gamma(dim)]);
     for (fi, alpha) in warm.alphas.iter_mut().enumerate() {
         let (mut xt, mut yt, mut xv, mut yv) = (vec![], vec![], vec![], vec![]);
         for i in 0..n {
@@ -290,11 +323,15 @@ pub fn cv(
         }
         let (e, g) = fold(&xt, &yt, &xv, &yv, dim, p, alpha)?;
         total += e;
-        grad[0] += g[0];
-        grad[1] += g[1];
+        for (a, b) in grad.iter_mut().zip(&g) {
+            *a += b;
+        }
     }
     let nf = n as f64;
-    *out = [total / nf, grad[0] / nf, grad[1] / nf];
+    out[0] = total / nf;
+    for (o, g) in out[1..].iter_mut().zip(&grad) {
+        *o = g / nf;
+    }
     if out.iter().all(|v| v.is_finite()) {
         Ok(())
     } else {

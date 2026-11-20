@@ -51,6 +51,29 @@ impl Data {
         assert_eq!(status, 0);
         out
     }
+
+    fn cv_ard(&self, ll: f64, lgs: &[f64], tol: f64) -> Vec<f64> {
+        let mut out = vec![0.0; 2 + self.dim];
+        let status = unsafe {
+            cv_objective_ard(
+                self.x.as_ptr(),
+                self.y.len(),
+                self.dim,
+                self.y.as_ptr(),
+                self.fold_of.as_ptr(),
+                self.k,
+                self.kind,
+                ll,
+                lgs.as_ptr(),
+                self.smoothing,
+                self.epsilon,
+                tol,
+                out.as_mut_ptr(),
+            )
+        };
+        assert_eq!(status, 0);
+        out
+    }
 }
 
 /// Small deterministic generator (xorshift) for the random test data.
@@ -104,6 +127,9 @@ fn matches_python_reference() {
     let _serial = serial();
     let cases: Value = serde_json::from_str(FIXTURE).unwrap();
     for case in cases.as_array().unwrap() {
+        if case.get("ard").is_some() {
+            continue; // see `ard_matches_python_reference`
+        }
         let data = Data {
             x: floats(&case["x"]),
             y: floats(&case["y"]),
@@ -438,6 +464,7 @@ fn logistic_trace_is_monotone_and_ends_at_the_final_model() {
 }
 
 #[test]
+#[ignore = "timing; run with --ignored --nocapture in release"]
 fn logistic_timings() {
     let _serial = serial();
     for n in [120usize, 300] {
@@ -465,6 +492,189 @@ fn logistic_timings() {
         data.cv(-3.0, 0.72, 1e-8);
         println!(
             "n={n}: train {t_train:.1} ms ({steps} steps), cv cold {t_cv:.1} ms, warm {:.1} ms, value {}",
+            t.elapsed().as_secs_f64() * 1e3,
+            out[0]
+        );
+    }
+}
+
+/// Data with `dim` features: the first three drive the target (Friedman #1 type for regression,
+/// a noisy sphere for classification), the others are noise.
+fn ard_data(kind: u32, n: usize, k: usize, dim: usize, smoothing: f64) -> Data {
+    let mut rng = Rng(0x2545F4914F6CDD1D);
+    let mut x = Vec::new();
+    let mut y = Vec::new();
+    for _ in 0..n {
+        let row: Vec<f64> = (0..dim).map(|_| rng.next()).collect();
+        let (a, b, c) = (row[0], row[1], row[2]);
+        y.push(if kind == 1 {
+            10.0 * (std::f64::consts::PI * a * b).sin()
+                + 20.0 * (c - 0.5).powi(2)
+                + 0.5 * (rng.next() - 0.5)
+        } else if (a - 0.5).powi(2) + (b - 0.5).powi(2) + 0.1 * (rng.next() - 0.5) < 0.1 {
+            1.0
+        } else {
+            -1.0
+        });
+        x.extend(row);
+    }
+    Data {
+        x,
+        y,
+        fold_of: (0..n).map(|i| (i % k) as f64).collect(),
+        dim,
+        k,
+        kind,
+        smoothing,
+        epsilon: 0.1,
+    }
+}
+
+#[test]
+fn ard_with_equal_widths_reproduces_the_isotropic_objective() {
+    let _serial = serial();
+    for (kind, smoothing, ll, lg) in [
+        (0, 0.3, -1.0, 0.5),
+        (1, 0.2, -3.0, 0.8),
+        (2, 0.0, -2.0, 0.3),
+    ] {
+        let data = ard_data(kind, 60, 3, 5, smoothing);
+        let tol = if kind == 2 { 1e-10 } else { 1e-9 };
+        let iso = data.cv(ll, lg, tol);
+        let ard = data.cv_ard(ll, &[lg; 5], tol);
+        let sum: f64 = ard[2..].iter().sum();
+        let errs = [rel(ard[0], iso[0]), rel(ard[1], iso[1]), rel(sum, iso[2])];
+        println!("kind {kind}: equal-width ARD vs isotropic, rel. errors {errs:?}");
+        assert!(errs.iter().all(|&e| e <= 1e-9), "kind {kind}: {errs:?}");
+    }
+}
+
+#[test]
+fn ard_gradient_matches_finite_differences() {
+    let _serial = serial();
+    for (kind, smoothing, ll) in [(0, 0.3, -1.0), (1, 0.2, -3.0), (2, 0.0, -2.0)] {
+        let data = ard_data(kind, 60, 3, 4, smoothing);
+        let lgs = [1.0, -0.3, 0.6, -1.2];
+        let tol = 1e-10;
+        let out = data.cv_ard(ll, &lgs, tol);
+        let h = 1e-4;
+        let scale = out[1..].iter().fold(1e-3f64, |a, v| a.max(v.abs()));
+        let fd_l =
+            (data.cv_ard(ll + h, &lgs, tol)[0] - data.cv_ard(ll - h, &lgs, tol)[0]) / (2.0 * h);
+        assert!(
+            (out[1] - fd_l).abs() <= 1e-4 * scale,
+            "kind {kind}: {} vs {fd_l}",
+            out[1]
+        );
+        for d in 0..4 {
+            let (mut p, mut m) = (lgs, lgs);
+            p[d] += h;
+            m[d] -= h;
+            let fd = (data.cv_ard(ll, &p, tol)[0] - data.cv_ard(ll, &m, tol)[0]) / (2.0 * h);
+            println!("kind {kind} d={d}: {} fd {fd}", out[2 + d]);
+            assert!(
+                (out[2 + d] - fd).abs() <= 1e-4 * scale,
+                "kind {kind} d={d}: {} vs {fd}",
+                out[2 + d]
+            );
+        }
+    }
+}
+
+#[test]
+fn ard_matches_python_reference() {
+    let _serial = serial();
+    let cases: Value = serde_json::from_str(FIXTURE).unwrap();
+    let mut seen = 0;
+    for case in cases.as_array().unwrap() {
+        if case.get("ard").is_none() {
+            continue;
+        }
+        seen += 1;
+        let data = Data {
+            x: floats(&case["x"]),
+            y: floats(&case["y"]),
+            fold_of: floats(&case["fold_of"]),
+            dim: case["dim"].as_u64().unwrap() as usize,
+            k: case["k"].as_u64().unwrap() as usize,
+            kind: case["kind"].as_u64().unwrap() as u32,
+            smoothing: case["smoothing"].as_f64().unwrap(),
+            epsilon: case["epsilon"].as_f64().unwrap(),
+        };
+        let mut worst = 0.0f64;
+        for pt in case["points"].as_array().unwrap() {
+            let tol = if data.kind == 2 { 1e-10 } else { 1e-8 };
+            let out = data.cv_ard(
+                pt["log_lambda"].as_f64().unwrap(),
+                &floats(&pt["log_gammas"]),
+                tol,
+            );
+            let mut want = vec![
+                pt["value"].as_f64().unwrap(),
+                pt["grad_log_lambda"].as_f64().unwrap(),
+            ];
+            want.extend(floats(&pt["grad_log_gammas"]));
+            let errs: Vec<f64> = out.iter().zip(&want).map(|(&a, &b)| rel(a, b)).collect();
+            worst = errs.iter().fold(worst, |a, &e| a.max(e));
+            assert!(
+                errs.iter().all(|&e| e <= 1e-5),
+                "{}: {errs:?}",
+                case["name"]
+            );
+        }
+        println!("oracle {}: max rel. error {worst:.2e}", case["name"]);
+    }
+    assert_eq!(seen, 3);
+}
+
+#[test]
+fn ard_rejects_bad_widths() {
+    let _serial = serial();
+    let data = ard_data(0, 12, 3, 3, 0.3);
+    let mut out = [0.0; 5];
+    for lgs in [
+        [0.0, f64::NAN, 0.0],
+        [0.0, f64::INFINITY, 0.0],
+        [0.0, -2000.0, 0.0],
+    ] {
+        let status = unsafe {
+            cv_objective_ard(
+                data.x.as_ptr(),
+                12,
+                3,
+                data.y.as_ptr(),
+                data.fold_of.as_ptr(),
+                3,
+                0,
+                -1.0,
+                lgs.as_ptr(),
+                0.3,
+                0.1,
+                1e-8,
+                out.as_mut_ptr(),
+            )
+        };
+        assert_eq!(status, -1, "{lgs:?}");
+    }
+}
+
+#[test]
+#[ignore = "timing; run with --ignored --nocapture in release"]
+fn ard_timings() {
+    let _serial = serial();
+    for (kind, n, dim, k) in [(1, 400, 8, 5), (0, 300, 6, 5)] {
+        let data = ard_data(kind, n, k, dim, if kind == 1 { 0.2 } else { 0.3 });
+        let lgs: Vec<f64> = (0..dim).map(|d| if d < 3 { 0.5 } else { -2.0 }).collect();
+        let ll = if kind == 1 { -3.0 } else { -4.0 };
+        let t = std::time::Instant::now();
+        let out = data.cv_ard(ll, &lgs, 1e-8);
+        let cold = t.elapsed().as_secs_f64() * 1e3;
+        let mut lgs2 = lgs.clone();
+        lgs2[0] += 0.02;
+        let t = std::time::Instant::now();
+        data.cv_ard(ll, &lgs2, 1e-8);
+        println!(
+            "ard kind {kind} n={n} dim={dim}: cold {cold:.0} ms, warm {:.0} ms, value {}",
             t.elapsed().as_secs_f64() * 1e3,
             out[0]
         );
