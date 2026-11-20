@@ -150,6 +150,8 @@ pub struct Progress<'a> {
     pub violation: f64,
     pub dual_objective: f64,
     pub n_active: usize,
+    /// Bias estimated from the current gradient (as at the end of the run; on the active set).
+    pub b: f64,
     pub alpha: &'a [f64],
 }
 
@@ -1169,12 +1171,17 @@ impl<'a, K: Kernel + ?Sized> Smo<'a, K> {
             }
             if opt.callback_period > 0 && steps % opt.callback_period == 0 && steps > 0 {
                 let alpha = self.unpermuted(&self.alpha);
+                let b = match &self.pending {
+                    Some(ex) => self.bias(ex).0,
+                    None => self.bias(&self.scan()).0,
+                };
                 let progress = Progress {
                     step: steps,
                     elapsed,
                     violation: self.violation,
                     dual_objective: self.value,
                     n_active: self.n_active,
+                    b,
                     alpha: &alpha,
                 };
                 if callback(&progress) {
